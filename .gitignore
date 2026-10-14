@@ -1,0 +1,14 @@
+.DS_Store
+.cpcache/
+.nrepl-port
+.clj-kondo/.cache/
+.lsp/
+target/
+*.iml
+.idea/
+# the test data that dev/fetch.sh downloads
+dev-resources/
+
+# ClojureScript tooling
+node_modules/
+.shadow-cljs/

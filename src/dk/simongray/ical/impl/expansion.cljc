@@ -1,0 +1,354 @@
+(ns ^:no-doc dk.simongray.ical.impl.expansion
+  "Recurrence rules expanded into the local times they make, by RFC 5545,
+  section 3.3.10.
+
+  Each interval of the rule is a period: a year, a month, a week, a day,
+  an hour, a minute or a second. A period's set is the days of the period
+  that pass the rule's BYxxx parts, at the times that pass them, then
+  narrowed by BYSETPOS. Where RFC 5545's table says that a part expands a
+  set, filtering the days of the whole period gives the same set, once
+  the parts that the rule leaves out are filled in from DTSTART.
+
+  Times are local seconds, as in the civil namespace."
+  (:require [dk.simongray.ical.impl.civil :as civil]))
+
+(def weekdays
+  "The weekday of each code of RFC 5545, from 0 for Sunday."
+  {"SU" 0 "MO" 1 "TU" 2 "WE" 3 "TH" 4 "FR" 5 "SA" 6})
+
+(def ^:private ranks
+  "The rank of each frequency, from the longest."
+  (zipmap ["YEARLY" "MONTHLY" "WEEKLY" "DAILY" "HOURLY" "MINUTELY" "SECONDLY"]
+          (range)))
+
+(defn- longer?
+  "Whether the frequency `freq` is longer than `than`."
+  [freq than]
+  (< (ranks freq) (ranks than)))
+
+(defn- in-range
+  "The numbers `xs` that are allowed between `lo` and `hi`, counting
+  negative ones from the end when `signed?`. Text (a leap month of RFC
+  7529) is left out."
+  [xs lo hi signed?]
+  (when xs
+    (vec (filter #(and (number? %)
+                       (or (<= lo % hi) (and signed? (<= (- hi) % (- lo)))))
+                 xs))))
+
+(defn- read-byday
+  "The BYDAY value `s` as a pair of its ordinal, or nil, and its weekday,
+  e.g. -1FR as [-1 5]."
+  [s]
+  (let [[_ ordinal code] (re-matches #"([+-]?\d+)?([A-Z]{2})" s)]
+    [(when ordinal #?(:clj (Long/parseLong ordinal) :cljs (js/parseInt ordinal 10)))
+     (weekdays code)]))
+
+;; RFC 5545, section 3.3.10: "Information, not contained in the rule,
+;; necessary to determine the various recurrence instance start time and
+;; dates are derived from the Start Time ("DTSTART") component attribute."
+(defn- day-defaults
+  "The `rule` with the day it leaves out taken from the date `y`-`m`-`d`
+  with the weekday `wd`."
+  [{:keys [freq bymonth byweekno byyearday bymonthday byday] :as rule} m d wd]
+  (cond
+    ;; as libical does: the days of the month of DTSTART
+    (and (= "YEARLY" freq) bymonthday (not (or bymonth byweekno byyearday)))
+    (assoc rule :bymonth [m])
+
+    (or byyearday bymonthday byday)
+    rule
+
+    ;; as libical does: the weekday of DTSTART in the weeks of BYWEEKNO
+    byweekno
+    (cond-> rule (= "YEARLY" freq) (assoc :byday [[nil wd]]))
+
+    :else
+    (case freq
+      "YEARLY"  (assoc rule :bymonth (or bymonth [m]) :bymonthday [d])
+      "MONTHLY" (assoc rule :bymonthday [d])
+      "WEEKLY"  (assoc rule :byday [[nil wd]])
+      rule)))
+
+;; RFC 5545, section 3.3.10: BYSECOND, BYMINUTE and BYHOUR are ignored when
+;; DTSTART is a date
+(defn- time-defaults
+  "The `rule` with the times it leaves out taken from `hh`:`mm`:`ss`, or
+  midnight alone when DTSTART is a date."
+  [{:keys [freq] :as rule} hh mm ss date?]
+  (if date?
+    (assoc rule :byhour [0] :byminute [0] :bysecond [0])
+    (cond-> rule
+      (and (nil? (:byhour rule)) (longer? freq "HOURLY"))     (assoc :byhour [hh])
+      (and (nil? (:byminute rule)) (longer? freq "MINUTELY")) (assoc :byminute [mm])
+      (and (nil? (:bysecond rule)) (longer? freq "SECONDLY")) (assoc :bysecond [ss]))))
+
+(declare week-one)
+
+;; As libical does: a YEARLY rule with BYWEEKNO counts its years from the
+;; year that the week of DTSTART belongs to
+(defn- week-year
+  "The year that the week of the day `day` belongs to, in the year `y`,
+  with weeks that start on the weekday `wkst`."
+  [y day wkst]
+  (cond
+    (>= day (week-one (inc y) wkst)) (inc y)
+    (< day (week-one y wkst))        (dec y)
+    :else                            y))
+
+(defn normalize
+  "The recurrence `rule`, as the values namespace reads it, ready to
+  expand from the local time `start`: its numbers in range, BYDAY as pairs
+  of ordinal and weekday, WKST as a weekday, and the parts it leaves out
+  filled in from `start`. A `date?` start is a date."
+  [rule start date?]
+  (let [[y m d hh mm ss] (civil/civil-from-seconds start)
+        day              (civil/floor-div start 86400)
+        wd               (civil/weekday day)
+        rule             (-> rule
+                             (update :interval #(max 1 (or % 1)))
+                             (update :wkst #(weekdays (or % "MO")))
+                             (update :byday #(some->> % (mapv read-byday)))
+                             (update :bymonth in-range 1 12 false)
+                             (update :byweekno in-range 1 53 true)
+                             (update :byyearday in-range 1 366 true)
+                             (update :bymonthday in-range 1 31 true)
+                             (update :byhour in-range 0 23 false)
+                             (update :byminute in-range 0 59 false)
+                             (update :bysecond in-range 0 60 false)
+                             (update :bysetpos in-range 1 366 true))]
+    (-> rule
+        (day-defaults m d wd)
+        (time-defaults hh mm ss date?)
+        (assoc :year (if (:byweekno rule) (week-year y day (:wkst rule)) y)
+               :month m
+               :day day))))
+
+;; RFC 5545, section 3.3.10: week number one is the first week, starting
+;; on WKST, with at least four days in the year
+(defn week-one
+  "The first day of week one of the year `y`, with weeks that start on the
+  weekday `wkst`."
+  [y wkst]
+  (let [jan1   (civil/days-from-civil y 1 1)
+        offset (mod (- (civil/weekday jan1) wkst) 7)]
+    (if (<= offset 3) (- jan1 offset) (+ jan1 (- 7 offset)))))
+
+(defn- week-days
+  "The days of the weeks `byweekno` of the year `y`, which can fall in the
+  years before and after it."
+  [y wkst byweekno]
+  (let [start (week-one y wkst)
+        weeks (quot (- (week-one (inc y) wkst) start) 7)]
+    (sort (distinct
+           (for [n     byweekno
+                 :let  [n (if (neg? n) (+ weeks 1 n) n)]
+                 :when (<= 1 n weeks)
+                 day   (range (+ start (* 7 (dec n))) (+ start (* 7 n)))]
+             day)))))
+
+(defn- nth-in
+  "Whether the day `day` is the `ordinal`th of its weekday in the span of
+  `length` days that starts on the day `first`, counting a negative
+  ordinal from the end."
+  [day ordinal first length]
+  (let [i (- day first)]
+    (if (pos? ordinal)
+      (= ordinal (inc (quot i 7)))
+      (= ordinal (- (inc (quot (- length 1 i) 7)))))))
+
+(defn- byday-match?
+  "Whether the day `day` is one of the `byday` pairs of the rule. An
+  ordinal counts within the month for a MONTHLY rule or a YEARLY rule with
+  BYMONTH, and within the year for a YEARLY rule without (erratum 3779).
+  Other rules ignore it."
+  [{:keys [freq bymonth byweekno byday]} day]
+  (let [wd    (civil/weekday day)
+        scope (cond
+                (= "MONTHLY" freq)                             :month
+                (and (= "YEARLY" freq) bymonth)                :month
+                (and (= "YEARLY" freq) (not byweekno))         :year)]
+    (some (fn [[ordinal w]]
+            (and (= w wd)
+                 (or (nil? ordinal) (nil? scope)
+                     (let [[y m] (civil/civil-from-days day)]
+                       (if (= :month scope)
+                         (nth-in day ordinal (civil/days-from-civil y m 1)
+                                 (civil/days-in-month y m))
+                         (nth-in day ordinal (civil/days-from-civil y 1 1)
+                                 (civil/days-in-year y)))))))
+          byday)))
+
+(defn- in-signed?
+  "Whether the `n`th of `length`, or the same counted from the end, is
+  one of the numbers `xs`."
+  [xs n length]
+  (some #(or (= % n) (= % (- n length 1))) xs))
+
+(defn day-passes?
+  "Whether the day `day` passes the BYMONTH, BYYEARDAY, BYMONTHDAY and
+  BYDAY parts of the `rule`."
+  [{:keys [bymonth byyearday bymonthday byday] :as rule} day]
+  (let [[y m d] (civil/civil-from-days day)]
+    (and (or (nil? bymonth) (some #{m} bymonth))
+         (or (nil? byyearday)
+             (in-signed? byyearday (inc (- day (civil/days-from-civil y 1 1)))
+                         (civil/days-in-year y)))
+         (or (nil? bymonthday) (in-signed? bymonthday d (civil/days-in-month y m)))
+         (or (nil? byday) (byday-match? rule day)))))
+
+(def ^:private units
+  "The seconds of each frequency shorter than a day."
+  {"HOURLY" 3600 "MINUTELY" 60 "SECONDLY" 1})
+
+(defn- period-days
+  "The days of the `k`th period of the `rule`, before its BYxxx parts."
+  [{:keys [freq interval year month day wkst byweekno]} k start]
+  (case freq
+    "YEARLY"  (let [y (+ year (* k interval))]
+                (if byweekno
+                  (week-days y wkst byweekno)
+                  (let [jan1 (civil/days-from-civil y 1 1)]
+                    (range jan1 (+ jan1 (civil/days-in-year y))))))
+    "MONTHLY" (let [i (+ (dec month) (* k interval))
+                    y (+ year (civil/floor-div i 12))
+                    m (inc (mod i 12))
+                    first (civil/days-from-civil y m 1)]
+                (range first (+ first (civil/days-in-month y m))))
+    "WEEKLY"  (let [first (- day (mod (- (civil/weekday day) wkst) 7))
+                    w     (+ first (* 7 k interval))]
+                (range w (+ w 7)))
+    "DAILY"   [(+ day (* k interval))]
+    [(civil/floor-div (+ start (* k interval (units freq))) 86400)]))
+
+(defn- times
+  "The seconds of the day of the `k`th period of the `rule`. A rule
+  shorter than daily fixes the hour, minute or second of its period, and
+  its BYxxx parts of those only limit."
+  [{:keys [freq interval byhour byminute bysecond]} k start]
+  (let [at (when-let [unit (units freq)]
+             (mod (+ start (* k interval unit)) 86400))
+        hh (some-> at (quot 3600))
+        mm (some-> at (rem 3600) (quot 60))
+        ss (some-> at (rem 60))
+        ok #(or (nil? %1) (some #{%2} %1))]
+    (case freq
+      "HOURLY"   (when (ok byhour hh)
+                   (for [m byminute s bysecond] (+ (* 3600 hh) (* 60 m) s)))
+      "MINUTELY" (when (and (ok byhour hh) (ok byminute mm))
+                   (for [s bysecond] (+ (* 3600 hh) (* 60 mm) s)))
+      "SECONDLY" (when (and (ok byhour hh) (ok byminute mm) (ok bysecond ss))
+                   [at])
+      (for [h byhour m byminute s bysecond] (+ (* 3600 h) (* 60 m) s)))))
+
+;; RFC 5545, section 3.3.10: "BYSETPOS operates on a set of recurrence
+;; instances in one interval of the recurrence rule."
+(defn- set-positions
+  "The times `xs` of a period at the positions `bysetpos`, counting
+  negative ones from the end."
+  [bysetpos xs]
+  (let [xs (vec xs)
+        n  (count xs)]
+    (->> bysetpos
+         (keep #(let [i (if (neg? %) (+ n %) (dec %))]
+                  (when (< -1 i n) (nth xs i))))
+         distinct
+         sort)))
+
+(defn period-set
+  "The local times of the `k`th period of the `rule`, from the local time
+  `start`, in order."
+  [rule k start]
+  (let [ts (sort (distinct (times rule k start)))
+        xs (for [day   (period-days rule k start)
+                 :when (day-passes? rule day)
+                 t     ts]
+             (+ (* 86400 day) t))]
+    (cond->> xs
+      (:bysetpos rule) (set-positions (:bysetpos rule)))))
+
+(defn- period-start
+  "The earliest local time that the `k`th period of the `rule` can make.
+  A YEARLY period with BYWEEKNO can start in the year before."
+  [{:keys [freq interval year month day wkst byweekno]} k start]
+  (* 86400
+     (case freq
+       "YEARLY"  (let [y    (+ year (* k interval))
+                       jan1 (civil/days-from-civil y 1 1)]
+                   (if byweekno (min jan1 (week-one y wkst)) jan1))
+       "MONTHLY" (let [i (+ (dec month) (* k interval))]
+                   (civil/days-from-civil (+ year (civil/floor-div i 12))
+                                          (inc (mod i 12)) 1))
+       "WEEKLY"  (+ (- day (mod (- (civil/weekday day) wkst) 7)) (* 7 k interval))
+       "DAILY"   (+ day (* k interval))
+       (civil/floor-div (+ start (* k interval (units freq))) 86400))))
+
+(def ^:private cycle-seconds
+  "The seconds of 400 years, after which the Gregorian calendar repeats
+  itself, weekdays included."
+  (* 146097 86400))
+
+(def ^:private last-second
+  "The last local time that iCalendar can write: the end of the year
+  9999."
+  (+ 59 (* 86400 (civil/days-from-civil 9999 12 31)) (* 23 3600) (* 59 60)))
+
+;; A rule's periods come round to the same place in the calendar after
+;; 400 years times its interval, so a rule that has made nothing in that
+;; long never will
+(defn- exhausted?
+  "Whether the `k`th period of the `rule` starts past the last time
+  iCalendar can write, or so long after the time `latest` that the rule
+  will make nothing more."
+  [rule k start latest]
+  (let [at (period-start rule k start)]
+    (or (> at last-second)
+        (> at (+ latest (* (:interval rule) cycle-seconds))))))
+
+(defn- skip-to-day
+  "The first period of the sub-daily `rule` on or after the day `day`."
+  [{:keys [freq interval]} start day]
+  (let [step (* interval (units freq))]
+    (long (Math/ceil (/ (- (* 86400 day) start) (double step))))))
+
+(defn- next-period
+  "The `k`th period of the `rule` or the first after it with any time on
+  or after `start`, as a pair of its number and its times, or nil when the
+  rule is exhausted. `latest` is the latest time the rule made. A rule
+  shorter than daily skips the days that its BYxxx parts leave out."
+  [rule k start latest]
+  (loop [k k]
+    (when-not (exhausted? rule k start latest)
+      (let [days (when (units (:freq rule)) (period-days rule k start))]
+        (if (and days (not (day-passes? rule (first days))))
+          (recur (max (inc k) (skip-to-day rule start (inc (first days)))))
+          (let [xs (drop-while #(< % start) (period-set rule k start))]
+            (if (seq xs) [k xs] (recur (inc k)))))))))
+
+(defn local-times
+  "The local times that the normalized `rule` makes from the local time
+  `start`, in order, as a lazy sequence that ends where the rule does, or
+  never. It doesn't apply COUNT or UNTIL, and leaves out `start` unless
+  the rule makes it."
+  [rule start]
+  (letfn [(step [k latest]
+            (lazy-seq
+             (when-let [[k xs] (next-period rule k start latest)]
+               (concat xs (step (inc k) (last xs))))))]
+    (step 0 start)))
+
+;; RFC 5545, section 3.8.5.3: "The "DTSTART" property defines the first
+;; instance in the recurrence set", and section 3.3.10: "The "DTSTART"
+;; property value always counts as the first occurrence."
+(defn rule-times
+  "The local times of the recurrence `rule`, as the values namespace reads
+  it, from the local time `start`: `start` first, even when the rule
+  doesn't make it, then those the rule makes until `past?` is true of
+  one, at most COUNT in all. A `date?` start is a date."
+  [rule start date? past?]
+  (lazy-seq
+   (let [xs (cond->> (local-times (normalize rule start date?) start)
+              past? (take-while (complement past?)))
+         xs (if (= start (first xs)) xs (cons start xs))]
+     (cond->> xs
+       (:count rule) (take (:count rule))))))
