@@ -1,6 +1,8 @@
 ical-clj
 ========
 
+[![Clojars Project](https://img.shields.io/clojars/v/dk.simongray/ical-clj.svg)](https://clojars.org/dk.simongray/ical-clj)
+
 This library reads and writes [iCalendar](https://www.rfc-editor.org/rfc/rfc5545)
 in Clojure and ClojureScript. It's the format of .ics files, calendar
 feeds and meeting invitations. A calendar is plain data, and the library
@@ -28,16 +30,17 @@ invitations and replies.
 Getting started
 ---------------
 
-The library needs Clojure 1.11+ and Java 11+. It isn't on Clojars yet, so
-use the SHA of the latest commit on `master` in your `deps.edn`:
+The library needs Clojure 1.11+ and Java 11+. Add the latest release from
+[Clojars](https://clojars.org/dk.simongray/ical-clj) to the `:deps` of
+your `deps.edn`:
 
 ```clojure
-dk.simongray/ical-clj {:git/url "https://github.com/simongray/ical-clj"
-                       :git/sha "…"}
+dk.simongray/ical-clj {:mvn/version "0.1.0"}
 ```
 
-In shadow-cljs a Git dependency only works through `deps.edn`, so set
-`:deps true` in your `shadow-cljs.edn` too.
+For changes that aren't released yet, use the SHA of the latest commit on
+`master` instead. In shadow-cljs a Git dependency only works through
+`deps.edn`, so set `:deps true` in your `shadow-cljs.edn` too.
 
 Reading and writing
 -------------------
