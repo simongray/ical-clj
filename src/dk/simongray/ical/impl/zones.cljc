@@ -265,3 +265,22 @@
     (if (seq candidates)
       (apply min candidates)
       before)))
+
+;; A time only moves forward, when it's in a gap, so once the times have
+;; passed x, none of them can move to before it
+(defn wall-times
+  "The local times `xs` of the `zone`, which are in order, as the times
+  that the clock shows when they happen: a time in a gap moves forward by
+  the gap (RFC 5545, section 3.3.5). They stay in order without
+  duplicates, lazily."
+  [zone xs]
+  (letfn [(step [pending xs]
+            (lazy-seq
+             (if-let [[x & more] (seq xs)]
+               (let [pending (conj pending (local zone (instant zone x)))
+                     done    (take-while #(<= % x) pending)]
+                 (if (seq done)
+                   (concat done (step (reduce disj pending done) more))
+                   (step pending more)))
+               (seq pending))))]
+    (step (sorted-set) xs)))

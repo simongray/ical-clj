@@ -65,9 +65,11 @@
   for a rule that the library can't expand (see expandable?).
 
   The first instance is always `start`, as section 3.8.5.3 says, even
-  when the rule wouldn't generate it, and COUNT counts it. The `zone`
-  (from tz/zone) is only needed to compare a local `start` with an UNTIL
-  in UTC. Without it, such a `start` is compared as if it were in UTC.
+  when the rule wouldn't generate it, and COUNT counts it. Given the
+  `zone` of a local `start` (from tz/zone), an instance at a time that
+  the clocks skip moves forward by the gap (section 3.3.5), and an UNTIL
+  in UTC compares with the instances' instants. Without it, the times
+  are as the rule generates them, and compare as if they were in UTC.
 
       (take 3 (occurrences {:freq \"MONTHLY\" :byday [\"-1FR\"]}
                            \"2026-01-30T18:00:00\"))
@@ -79,9 +81,11 @@
    (when (expandable? rule)
      (let [date? (date? start)
            utc?  (str/ends-with? start "Z")
-           text  (if date? civil/date-text #(civil/date-time-text % utc?))]
-       (map text (expansion/rule-times rule (civil/seconds start) date?
-                                       (past-until (:until rule) start zone)))))))
+           text  (if date? civil/date-text #(civil/date-time-text % utc?))
+           xs    (expansion/rule-times rule (civil/seconds start) date?
+                                       (past-until (:until rule) start zone))]
+       (map text (cond->> xs
+                   (and zone (not date?) (not utc?)) (zones/wall-times zone)))))))
 
 (comment
   (take 5 (occurrences (parse "FREQ=MONTHLY;BYDAY=TU,WE,TH;BYSETPOS=3")

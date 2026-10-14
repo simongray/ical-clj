@@ -126,6 +126,11 @@
              :when (and (number? v)
                         (not (or (<= lo v hi) (and signed? (<= (- hi) v (- lo))))))]
          (err :rule-part-out-of-range {:part k :value v}))
+       ;; ordwk = 1*2DIGIT ; 1 to 53
+       (for [d     byday
+             :let  [ordinal (second (re-matches #"([+-]?\d+)[A-Z]{2}" d))]
+             :when (and ordinal (not (<= 1 (abs (parse-long (str/replace ordinal "+" ""))) 53)))]
+         (err :rule-part-out-of-range {:part :byday :value d}))
        (when (and (:count rule) (:until rule))
          [(err :count-and-until {})])
        (when (zero? (or (:interval rule) 1))

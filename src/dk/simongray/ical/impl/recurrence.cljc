@@ -167,9 +167,10 @@
         by-time   (remove (set by-date) exdates)
         excluded  (merge-sorted (cons (times-of cal by-time fr opts)
                                       (rule-times (props c :exrule) start fr)))]
-    (cond-> (remove-sorted included excluded false)
-      (seq by-date)
-      (remove-sorted (times-of cal by-date (assoc fr :date? true) opts) true))))
+    (cond->> (cond-> (remove-sorted included excluded false)
+               (seq by-date)
+               (remove-sorted (times-of cal by-date (assoc fr :date? true) opts) true))
+      (and (:zone fr) (not (:date? fr))) (zones/wall-times (:zone fr)))))
 
 (defn- shift-end
   "The property `p` of the end of a component that started at the local

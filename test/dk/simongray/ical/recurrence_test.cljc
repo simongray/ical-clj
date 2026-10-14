@@ -54,6 +54,19 @@
       (is (= ["2026-10-08T14:00:00" "2026-10-08T17:00:00"]
              [(ical/value rdate :dtstart) (ical/value rdate :dtend)])))))
 
+(deftest clock-changes
+  (testing "a time that the clocks skip moves forward, without a duplicate"
+    (is (= ["2026-03-29T00:30:00" "2026-03-29T01:30:00" "2026-03-29T03:30:00"
+            "2026-03-29T04:30:00"]
+           (starts (calendar "BEGIN:VEVENT" "UID:a"
+                             "DTSTART;TZID=Europe/Copenhagen:20260329T003000"
+                             "RRULE:FREQ=HOURLY;COUNT=5" "END:VEVENT")))))
+  (testing "a daily time in the gap is an hour later on that day only"
+    (is (= ["2026-03-28T02:30:00" "2026-03-29T03:30:00" "2026-03-30T02:30:00"]
+           (starts (calendar "BEGIN:VEVENT" "UID:a"
+                             "DTSTART;TZID=Europe/Copenhagen:20260328T023000"
+                             "RRULE:FREQ=DAILY;COUNT=3" "END:VEVENT"))))))
+
 (deftest overrides
   (let [cal (calendar "BEGIN:VEVENT" "UID:a" "SEQUENCE:0" "SUMMARY:Møde"
                       "DTSTART;TZID=Europe/Copenhagen:20261005T100000"

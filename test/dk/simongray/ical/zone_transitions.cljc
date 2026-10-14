@@ -4,11 +4,16 @@
   the JVM gives them. The past no longer changes, so every platform
   should give the same. Made by dev/dk/simongray/ical/tables.clj.")
 
-(def from 631152000)
+(def from
+  "The start of the span, 1990-01-01T00:00:00Z."
+  631152000)
 
-(def to 1735689600)
+(def to
+  "The end of the span, 2025-01-01T00:00:00Z."
+  1735689600)
 
 (def transitions
+  "The transitions of each zone, by its name."
   {"Africa/Casablanca"
    [[1212278400 0 3600] [1220223600 3600 0] [1243814400 0 3600] [1250809200 3600 0]
     [1272758400 0 3600] [1281222000 3600 0] [1301788800 0 3600] [1312066800 3600 0]

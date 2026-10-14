@@ -77,7 +77,8 @@
     (is (= [:until-mismatch] (rule-errors "FREQ=DAILY;UNTIL=20261020T000000")))
     (is (= [:byweekno-not-yearly] (rule-errors "FREQ=MONTHLY;BYWEEKNO=3")))
     (is (= [:bysetpos-alone] (rule-errors "FREQ=MONTHLY;BYSETPOS=1")))
-    (is (= [:rule-part-out-of-range] (rule-errors "FREQ=MONTHLY;BYMONTHDAY=32"))))
+    (is (= [:rule-part-out-of-range] (rule-errors "FREQ=MONTHLY;BYMONTHDAY=32")))
+    (is (= [:rule-part-out-of-range] (rule-errors "FREQ=MONTHLY;BYDAY=0MO"))))
   (testing "a DTSTART that the rule doesn't make"
     (is (= [:unsynchronized-dtstart]
            (remove #{:missing-vtimezone}

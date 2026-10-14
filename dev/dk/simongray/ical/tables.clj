@@ -76,9 +76,10 @@
                "  its instant, the offset before and the offset after, in seconds, as\n"
                "  the JVM gives them. The past no longer changes, so every platform\n"
                "  should give the same. Made by dev/dk/simongray/ical/tables.clj.\")\n\n"
-               "(def from " from ")\n\n"
-               "(def to " to ")\n\n"
+               "(def from\n  \"The start of the span, 1990-01-01T00:00:00Z.\"\n  " from ")\n\n"
+               "(def to\n  \"The end of the span, 2025-01-01T00:00:00Z.\"\n  " to ")\n\n"
                "(def transitions\n"
+               "  \"The transitions of each zone, by its name.\"\n"
                "  {"
                (str/join "\n   " (for [[k v] table]
                                    (str (pr-str k) "\n   ["
