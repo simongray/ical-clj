@@ -55,7 +55,7 @@
    "(utc+05:30) chennai, kolkata, mumbai, new delhi" "Asia/Calcutta"
    "(utc+05:30) sri jayawardenepura" "Asia/Colombo"
    "(utc+05:45) kathmandu" "Asia/Katmandu"
-   "(utc+06:00) astana --> <!-- microsoft probably keeps central asia standard time, but change astana to something else." "Asia/Bishkek"
+   "(utc+06:00) astana" "Asia/Bishkek"
    "(utc+06:00) dhaka" "Asia/Dhaka"
    "(utc+06:00) omsk" "Asia/Omsk"
    "(utc+06:30) yangon (rangoon)" "Asia/Rangoon"

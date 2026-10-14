@@ -9,6 +9,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.tz :as tz]
             [dk.simongray.ical.impl.zones :as zones]))
 
@@ -24,12 +25,13 @@
   "The default IANA zone of each Windows zone in the text `xml` of
   windowsZones.xml, by its Windows name and by the display name in the
   comment above it, e.g. (UTC+01:00) Amsterdam, Berlin, Bern, Rome,
-  Stockholm, Vienna. Each name is in lower case."
+  Stockholm, Vienna. Each name is in lower case. Another comment can come
+  between the display name and the mapping."
   [xml]
-  (->> (re-seq #"<!-- (.+?) -->\s*<mapZone other=\"([^\"]+)\" territory=\"001\" type=\"([^\" ]+)" xml)
+  (->> (re-seq #"<!-- ([^<>]+?) -->(?:\s*<!--[^<>]*-->)*\s*<mapZone other=\"([^\"]+)\" territory=\"001\" type=\"([^\" ]+)" xml)
        (mapcat (fn [[_ display windows iana]]
-                 [[(str/lower-case windows) iana]
-                  [(str/lower-case display) iana]]))
+                 [[(locale/lower-case windows) iana]
+                  [(locale/lower-case display) iana]]))
        (into (sorted-map))))
 
 (def rfc-5546
@@ -65,7 +67,7 @@
                 :when    method
                 :let     [rows (remove (fn [[_ n]] (or (= "METHOD" n) (re-find #"^(IANA|X)-" n)))
                                        (table-rows lines i))
-                          kw   #(keyword (str/lower-case %))]]
+                          kw   #(keyword (locale/lower-case %))]]
             [[method (kw component)]
              {:calendar  (into (sorted-map) (for [[ind n p] rows :when (= 1 ind)] [(kw n) p]))
               :component (into (sorted-map) (for [[ind n p] rows :when (< 1 ind)] [(kw n) p]))}]))))

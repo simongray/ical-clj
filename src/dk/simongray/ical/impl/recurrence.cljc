@@ -173,6 +173,26 @@
     (cond-> (remove-sorted included excluded false)
       (seq days) (remove-sorted days true))))
 
+(defn- in-utc
+  "The date-time property `p` with the instant `t` as its value, in UTC,
+  and without a TZID."
+  [p t]
+  (let [params (dissoc (:params p) :tzid)]
+    (cond-> (assoc p :value (civil/date-time-text t true))
+      (seq params)  (assoc :params params)
+      (empty? params) (dissoc :params))))
+
+;; An end in the hour that the clocks repeat would, as a local time, mean
+;; the first of the two, so it's written in UTC when it's the second
+(defn- end-at
+  "The property `p` of an end in the frame `fr`, at the instant `t`, or at
+  the local time `x` when `t` is nil."
+  [p fr t x]
+  (let [local (if t (local-of fr t) x)]
+    (if (and t local (not= t (epoch fr local)))
+      (in-utc p t)
+      (assoc p :value (text fr (or local x))))))
+
 (defn- shift-end
   "The property `p` of the end of a component that started at the local
   time `start` and now starts at `start'`, in the frame `fr`, moved so
@@ -191,10 +211,8 @@
       (let [end   (civil/seconds (:value p))
             exact (if (and (epoch efr end) (epoch fr start))
                     (- (epoch efr end) (epoch fr start))
-                    (- (in-frame efr end fr) start))
-            end'  (or (some->> (epoch fr start') (+ exact) (local-of efr))
-                      (+ start' exact))]
-        (assoc p :value (text efr end'))))))
+                    (- (in-frame efr end fr) start))]
+        (end-at p efr (some->> (epoch fr start') (+ exact)) (+ start' exact))))))
 
 (defn- with-property
   "The component `c` with the property `p` in place of the first of its
@@ -282,8 +300,14 @@
     (cond
       (prop c k)               (prop c k)
       (nil? fr)                nil
-      (and (string? (:value duration)) (not= :unknown (:type duration)))
+      (and (string? (:value duration)) (not= :unknown (:type duration)) (:date? fr))
       (moved (plus-duration fr (civil/seconds (:value dtstart)) (:value duration)))
+
+      (and (string? (:value duration)) (not= :unknown (:type duration)))
+      (let [[days secs] (civil/duration-parts (:value duration))
+            wall        (+ (civil/seconds (:value dtstart)) (* 86400 days))]
+        (end-at (assoc dtstart :name k) fr (some->> (epoch fr wall) (+ secs)) (+ wall secs)))
+
       (:date? fr)              (moved (+ 86400 (civil/seconds (:value dtstart))))
       :else                    (assoc dtstart :name k))))
 

@@ -9,7 +9,8 @@
 
   Local date-times are strings in the form of jCal, e.g.
   \"2026-10-12T19:00:00\", and instants are insts."
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.impl.windows :as windows]
@@ -34,23 +35,44 @@
          (map #(subs tzid (inc %)))
          (remove str/blank?))))
 
+;; RFC 5545, section 3.3.14: hours from 00 to 23, minutes and seconds
+;; from 00 to 59
 (defn- fixed-zone
   "The zone of the fixed UTC offset `s`, e.g. +02:00 or Z, or nil."
   [s]
   (cond
-    (= "Z" s)                                       {:tzid s :offset 0}
-    (re-matches #"[+-]\d{2}:\d{2}(?::\d{2})?" s)   {:tzid s :offset (civil/offset-seconds s)}))
+    (= "Z" s)
+    {:tzid s :offset 0}
+
+    (re-matches #"[+-](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?" s)
+    {:tzid s :offset (civil/offset-seconds s)}))
+
+(def ^:private last-vtimezones
+  "The calendar whose VTIMEZONEs were looked up last, with them by TZID."
+  (atom nil))
+
+;; The times of a calendar are resolved one at a time, often by a caller
+;; that goes through its events, so the VTIMEZONEs of the last calendar
+;; are kept by TZID
+(defn- vtimezones
+  "The VTIMEZONEs of the calendar `cal` by TZID, the first of each."
+  [cal]
+  (let [[c index] @last-vtimezones]
+    (if (identical? c cal)
+      index
+      (let [index (reduce (fn [m z]
+                            (let [tzid (some #(when (= :tzid (:name %)) (:value %)) (:properties z))]
+                              (cond-> m (and tzid (not (contains? m tzid))) (assoc tzid z))))
+                          {}
+                          (filter #(= :vtimezone (:name %)) (:components cal)))]
+        (reset! last-vtimezones [cal index])
+        index))))
 
 (defn- calendar-zone
   "The zone of the VTIMEZONE of the calendar `cal` with the TZID `tzid`,
   or nil."
   [cal tzid]
-  (some->> (:components cal)
-           (filter #(and (= :vtimezone (:name %))
-                         (some (fn [p] (and (= :tzid (:name p)) (= tzid (:value p))))
-                               (:properties %))))
-           first
-           zones/vtimezone-zone))
+  (some-> (get (vtimezones cal) tzid) zones/vtimezone-zone))
 
 (defn zone
   "The zone that the TZID `tzid` names, or nil when nothing defines it.
@@ -126,17 +148,45 @@
   [[t from _]]
   (+ t from))
 
-(defn- yearly-key
-  "The yearly rule that the transition `tr` follows: its month, its
-  weekday with its ordinal in the month (-1 for the last), its time of day
-  and its offsets."
+;; The yearly rules of the time zone database put a transition on the nth
+;; or the last weekday of a month, or on the first weekday on or after a
+;; day, e.g. Fri>=23 in Asia/Jerusalem
+(defn- forms
+  "The forms of yearly rule that the day `d` of a month of `length` days
+  fits, for its weekday: [:nth n] for n up to 4, [:last], and [:from day]
+  for each day on or after which it's the first of its weekday."
+  [d length]
+  (set (concat (when (<= d 28) [[:nth (inc (quot (dec d) 7))]])
+               (when (> (+ d 7) length) [[:last]])
+               (for [from (range (max 1 (- d 6)) (inc (min d (- length 6))))]
+                 [:from from]))))
+
+(defn- yearly
+  "The transition `tr` as a map of its :year, the :key that each
+  transition of its yearly rule shares (its month, weekday, time of day
+  and offsets), and the :forms of rule that its day fits."
   [[_ from to :as tr]]
   (let [x                 (onset tr)
-        [_ m d hh mm ss]  (civil/civil-from-seconds x)
-        [y]               (civil/civil-from-seconds x)
-        ordinal           (if (> (+ d 7) (civil/days-in-month y m)) -1 (inc (quot (dec d) 7)))
-        wd                (civil/weekday (civil/floor-div x 86400))]
-    [m (str ordinal (weekday-codes wd)) hh mm ss from to]))
+        [y m d hh mm ss]  (civil/civil-from-seconds x)]
+    {:year  y
+     :key   [m (civil/weekday (civil/floor-div x 86400)) hh mm ss from to]
+     :forms (forms d (civil/days-in-month y m))}))
+
+(defn- run
+  "The run of the transitions `trs`, which come a year apart in the
+  direction `step` (1 or -1) from the transition `tr`, that follow one
+  yearly rule with it, of the forms `fits`: a map of its :trs, from `tr`
+  on, its :year, the year of the last, and the :forms that they all fit."
+  [tr trs step fits]
+  (let [{:keys [year key]} (yearly tr)]
+    (reduce (fn [acc t]
+              (let [y  (yearly t)
+                    fs (set/intersection (:forms acc) (:forms y))]
+                (if (and (= (:year y) (+ (:year acc) step)) (= key (:key y)) (seq fs))
+                  (assoc acc :trs (conj (:trs acc) t) :year (:year y) :forms fs)
+                  (reduced acc))))
+            {:trs [tr] :year year :forms fits}
+            trs)))
 
 (defn- kind
   "Whether the transition `tr` starts daylight time or standard time, by
@@ -160,51 +210,70 @@
                    (conj {:name :rdate :value (mapv local (rest trs))}))}))
 
 (defn- yearly-rule
-  "The yearly recurrence rule of the transitions that share the
-  `yearly-key` k."
-  [[m byday]]
-  {:freq "YEARLY" :bymonth [m] :byday [byday]})
+  "The yearly recurrence rule of a run of transitions of the `key` that
+  fit the forms `fits`: the nth weekday rather than the last, and that
+  rather than the first on or after a day."
+  [[m wd] fits]
+  (let [code (weekday-codes wd)
+        n    (some #(when (= :nth (first %)) (second %)) (sort fits))
+        day  (some->> (seq (keep #(when (= :from (first %)) (second %)) fits)) (apply max))]
+    (cond
+      n               {:freq "YEARLY" :bymonth [m] :byday [(str n code)]}
+      (fits [:last])  {:freq "YEARLY" :bymonth [m] :byday [(str -1 code)]}
+      :else           {:freq "YEARLY" :bymonth [m] :byday [code]
+                       :bymonthday (vec (range day (+ day 7)))})))
 
-(defn- tail
-  "The transitions at the end of `trs` that follow the same yearly rule
-  as the last, when there are at least two of them."
-  [trs]
-  (let [k   (some-> (last trs) yearly-key)
-        run (reverse (take-while #(= k (yearly-key %)) (reverse trs)))]
-    (when (< 1 (count run)) run)))
-
+;; The runs of transitions at the end of the span become RRULEs. The
+;; transitions of the 30 years after it tell which form a rule has, and
+;; whether the zone still follows it; when it doesn't, the RRULEs end with
+;; their last transition.
 (defn- observances
-  "The STANDARD and DAYLIGHT components of the transitions `trs`: those
-  of the yearly rules that the zone follows at the end, when it follows
-  one for both, and the earlier transitions grouped by their offsets."
-  [trs]
-  (let [by-kind (group-by kind trs)
-        tails   (keep #(tail (get by-kind %)) [:standard :daylight])
-        ruled?  (= 2 (count tails))
-        ruled   (if ruled? (set (apply concat tails)) #{})
-        earlier (remove ruled trs)]
+  "The STANDARD and DAYLIGHT components of the transitions `trs`, up to
+  the instant `end`, and those after it up to the end of `last-year`:
+  the yearly rules that the zone follows at the end of the span, for both
+  kinds, and the other transitions grouped by their offsets."
+  [trs end last-year]
+  (let [runs    (for [k     [:standard :daylight]
+                      :let  [[in after] (split-with #(< (first %) end) (filter #(= k (kind %)) trs))]
+                      :when (seq in)
+                      :let  [back    (run (last in) (reverse (butlast in)) -1
+                                          (:forms (yearly (last in))))
+                             forward (run (last in) after 1 (:forms back))]
+                      :when (< 1 (count (:trs back)))]
+                  {:trs     (vec (reverse (:trs back)))
+                   :forms   (:forms forward)
+                   :last    (peek (:trs forward))
+                   :open?   (and (= (count (:trs forward)) (inc (count after)))
+                                 (= last-year (:year forward)))})
+        ruled?  (= 2 (count runs))
+        open?   (every? :open? runs)
+        ruled   (if ruled? (set (mapcat :trs runs)) #{})
+        earlier (remove ruled (take-while #(< (first %) end) trs))]
     (concat (for [[_ group] (sort-by (comp first first second)
                                      (group-by (fn [[_ from to]] [from to]) earlier))]
               (observance group nil))
             (when ruled?
-              (for [run (sort-by (comp first first) tails)]
-                (observance run (yearly-rule (yearly-key (first run)))))))))
+              (for [{:keys [trs forms last]} (sort-by (comp first first :trs) runs)]
+                (observance trs (cond-> (yearly-rule (:key (yearly (first trs))) forms)
+                                  (not open?) (assoc :until (civil/date-time-text (first last) true)))))))))
 
 (defn vtimezone
   "A VTIMEZONE with the TZID `tzid` for the platform's `zone`, covering
   the years `from` to `to`. If the zone follows yearly rules at the end of
-  that span, they become RRULEs, so the definition goes on after it.
+  that span, they become RRULEs, so the definition goes on after it, for
+  as long as the platform knows that the zone follows them.
 
       (vtimezone (zone \"Europe/Copenhagen\") \"Europe/Copenhagen\" 2026 2027)"
   [zone tzid from to]
   (let [start (* 86400 (civil/days-from-civil (dec from) 1 1))
         end   (* 86400 (civil/days-from-civil (+ to 2) 1 1))
-        trs   (zones/transitions zone start end)
+        ahead (* 86400 (civil/days-from-civil (+ to 32) 1 1))
+        trs   (zones/transitions zone start ahead)
         off   (zones/offset zone start)]
     {:name       :vtimezone
      :properties [{:name :tzid :value tzid}]
-     :components (vec (if (seq trs)
-                        (observances trs)
+     :components (vec (if (some #(< (first %) end) trs)
+                        (observances trs end (+ to 31))
                         [{:name       :standard
                           :properties [{:name :dtstart :value "1970-01-01T00:00:00"}
                                        {:name :tzoffsetfrom :value (civil/offset-text off)}

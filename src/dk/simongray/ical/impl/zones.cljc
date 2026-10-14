@@ -190,66 +190,94 @@
   [v]
   (and (string? v) (boolean (re-matches #"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z?)?" v))))
 
-(defn- merge-sorted
-  "The sequences `xs` and `ys`, each sorted by `f`, merged into one,
-  lazily."
-  [f xs ys]
+(defn- merge-all
+  "The sequences `xss`, each sorted by `f`, merged into one, lazily. Each
+  step looks at all of them, rather than nesting a lazy sequence for each,
+  which would overflow the stack for thousands."
+  [f xss]
   (lazy-seq
-   (cond
-     (empty? xs)                        ys
-     (empty? ys)                        xs
-     (<= (f (first xs)) (f (first ys))) (cons (first xs) (merge-sorted f (rest xs) ys))
-     :else                              (cons (first ys) (merge-sorted f xs (rest ys))))))
+   (let [xss (filterv seq xss)]
+     (when (seq xss)
+       (let [i (apply min-key #(f (first (nth xss %))) (range (count xss)))]
+         (cons (first (nth xss i)) (merge-all f (update xss i rest))))))))
 
 ;; RFC 5545, section 3.6.5: an observance starts at its DTSTART, and at
 ;; each time of its RDATEs and RRULE, all in the local time before it (the
-;; time of TZOFFSETFROM), with UNTIL in UTC
+;; time of TZOFFSETFROM), with UNTIL in UTC. Some write a local UNTIL,
+;; which is taken as local time, and a date as the end of its day. No
+;; zone's clocks change more often than monthly, and a rule that would
+;; make millions of onsets is left out.
 (defn- observance
   "The STANDARD or DAYLIGHT component `c` as a map of its :from and :to
-  offsets in seconds and its :onsets, a lazy sequence of the instants when
-  it starts, in order. It's nil when it lacks a DTSTART or an offset."
+  offsets in seconds, its :onsets, a lazy sequence of the instants when
+  it starts, in order, and either :periodic, the instant from which only
+  a rule that repeats every 400 years makes them, or :until, an instant
+  that they all come before. It's nil when it lacks a DTSTART or an
+  offset."
   [c]
   (let [start  (first-value c :dtstart)
         from   (civil/offset-seconds (first-value c :tzoffsetfrom))
         to     (civil/offset-seconds (first-value c :tzoffsetto))
-        rule   (first-value c :rrule)
+        rule   (let [r (first-value c :rrule)]
+                 (when (and (map? r) (#{"YEARLY" "MONTHLY"} (:freq r))) r))
         rdates (->> (filter #(= :rdate (:name %)) (:properties c))
                     (mapcat :value)
                     (filter local-text?))]
     (when (and (local-text? start) from to)
       (let [x     (civil/seconds start)
-            until (when (and (map? rule) (local-text? (:until rule)))
-                    (civil/seconds (:until rule)))
-            past? (when until #(> (- % from) until))
-            xs    (if (map? rule) (expansion/rule-times rule x false past?) [x])]
-        {:from   from
-         :to     to
-         :start  x
-         :onsets (map #(- % from)
-                      (merge-sorted identity xs (sort (map civil/seconds rdates))))}))))
-
-(defn- transitions-of
-  "The transitions of the `observances`, pairs of an instant and the
-  offset from then on, in order, as a lazy sequence."
-  [observances]
-  (reduce (fn [acc {:keys [to onsets]}]
-            (merge-sorted first acc (map (fn [t] [t to]) onsets)))
-          ()
-          observances))
+            until (:until rule)
+            past? (when (local-text? until)
+                    (let [limit (cond-> (civil/seconds until)
+                                  (not (str/includes? until "T")) (+ 86399))]
+                      (if (str/ends-with? until "Z")
+                        #(> (- % from) limit)
+                        #(> % limit))))
+            xs    (if rule (expansion/rule-times rule x false past?) [x])
+            final (- (reduce max x (map civil/seconds rdates)) from)]
+        (merge {:from   from
+                :to     to
+                :start  x
+                :onsets (map #(- % from)
+                             (merge-all identity [xs (sort (map civil/seconds rdates))]))}
+               (cond
+                 ;; a day either side of UNTIL covers its offset
+                 (nil? rule)                        {:until (inc final)}
+                 (:count rule)                      nil
+                 past?                              {:until (+ 86400 (max final (civil/seconds until)))}
+                 (= 1 (or (:interval rule) 1))      {:periodic final}))))))
 
 (def ^:private horizon
   "The instant up to which the transitions of a VTIMEZONE are kept in a
   vector: the start of the year 2200."
   (* 86400 (civil/days-from-civil 2200 1 1)))
 
+(def ^:private cycle-seconds
+  "The seconds of 400 years, after which the Gregorian calendar repeats
+  itself, weekdays included."
+  (* 146097 86400))
+
 ;; Outlook's VTIMEZONEs start their rules in 1601, so the transitions up
-;; to now are many, and a vector is searched by bisection
+;; to now are many, and a vector is searched by bisection. Those after the
+;; horizon aren't kept, since a zone is cached and the years go on to 9999.
+;; When only yearly or monthly rules make the transitions of the 400 years
+;; before the horizon, those after it repeat them; otherwise they're worked
+;; out when asked for.
 (defn- transition-table
-  "The transitions of the `observances` as a map of :near, a vector of
-  those before the horizon, and :far, a lazy sequence of the rest."
+  "The transitions of the `observances`, pairs of an instant and the
+  offset from then on, as a map of :near, a vector of those before the
+  horizon in order, :periodic?, whether those after it repeat those of
+  the 400 years before it, and :far, a function of no arguments that
+  gives those after it in order, lazily."
   [observances]
-  (let [[near far] (split-with #(< (first %) horizon) (transitions-of observances))]
-    {:near (vec near) :far far}))
+  (let [pairs (fn [{:keys [to onsets]}] (map (fn [t] [t to]) onsets))
+        since (- horizon cycle-seconds)]
+    {:near      (vec (sort-by first (mapcat #(take-while (fn [[t]] (< t horizon)) (pairs %))
+                                            observances)))
+     :periodic? (every? #(or (some-> (:periodic %) (<= since)) (some-> (:until %) (< since)))
+                        observances)
+     :far       (fn []
+                  (merge-all first (map #(drop-while (fn [[t]] (< t horizon)) (pairs %))
+                                        observances)))}))
 
 (defn- vtimezone-zone*
   "The zone that the VTIMEZONE component `c` defines, or nil when it has
@@ -295,12 +323,18 @@
   (cond
     (:iana zone)   (platform-offset (:iana zone) t)
     (:offset zone) (:offset zone)
-    :else          (let [{:keys [table initial]}  (:observances zone)
-                         {:keys [near far]}       @table
-                         before                   (offset-in near initial t)]
-                     (if (< t horizon)
-                       before
-                       (transition-offset far before t)))))
+    :else          (let [{:keys [table initial]}       (:observances zone)
+                         {:keys [near far periodic?]}  @table]
+                     (cond
+                       (< t horizon)
+                       (offset-in near initial t)
+
+                       periodic?
+                       (offset-in near initial
+                                  (- t (* cycle-seconds (inc (quot (- t horizon) cycle-seconds)))))
+
+                       :else
+                       (transition-offset (far) (offset-in near initial t) t)))))
 
 (defn local
   "The local time of the instant `t` in the `zone`."

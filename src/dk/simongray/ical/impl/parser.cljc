@@ -67,14 +67,30 @@
     (let [t (when (string? v) (lines/->keyword v))]
       (if (contains? registry/value-types t) t :unknown))))
 
+(def ^:private single-params
+  "The parameters of RFC 5545 that have one value."
+  #{:altrep :cn :cutype :dir :encoding :fmttype :fbtype :language :partstat
+    :range :related :reltype :role :rsvp :sent-by :tzid :value})
+
+;; RFC 5545, section 3.2: a comma that isn't quoted in a parameter that has
+;; one value, e.g. TZID=Eastern Standard Time, US, is part of the value
+(defn- joined
+  "The `params` with the values of each that has one value joined."
+  [params]
+  (reduce-kv (fn [m k v]
+               (cond-> m (and (sequential? v) (single-params k)) (assoc k (str/join "," v))))
+             params
+             params))
+
 ;; RFC 5545, section 3.2.20: VALUE gives the type of the value, and a
 ;; property without it has its default type. Values that a client wrote
 ;; without VALUE, e.g. a DTSTART that is a date, are read as the first of
 ;; the property's other types that fits.
 (defn read-property
   "The property of the content line `line`, as lines/read-line returns it."
-  [{k :name :keys [params text]}]
-  (let [entry    (registry/property k)
+  [{k :name :keys [text] :as line}]
+  (let [params   (joined (:params line))
+        entry    (registry/property k)
         explicit (explicit-type (:value params))
         others   (dissoc params :value)]
     (cond
