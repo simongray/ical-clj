@@ -146,6 +146,16 @@ VTIMEZONEs:
 A calendar that you send to others should define every zone it uses.
 Add the missing VTIMEZONEs with `tz/with-timezones`.
 
+Free and busy time
+------------------
+
+To find when something is booked, e.g. a room, ask `ical/free-busy` for
+the busy time of its calendar between two dates. It answers with a
+VFREEBUSY, as a CalDAV server would. A VAVAILABILITY
+([RFC 7953](https://www.rfc-editor.org/rfc/rfc7953)) in the calendar
+makes the time outside its AVAILABLE times busy too, e.g. outside the
+hours when the room can be booked.
+
 Scheduling
 ----------
 

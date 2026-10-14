@@ -28,7 +28,8 @@
   A value that doesn't parse as its type keeps its original text, with
   the :type :unknown. So does an unknown property whose text would change
   if it were unescaped."
-  (:require [dk.simongray.ical.impl.lines :as lines]
+  (:require [dk.simongray.ical.impl.busy :as busy]
+            [dk.simongray.ical.impl.lines :as lines]
             [dk.simongray.ical.impl.parser :as parser]
             [dk.simongray.ical.impl.recurrence :as recurrence]
             [dk.simongray.ical.impl.serializer :as serializer]
@@ -168,6 +169,27 @@
   ([cal from to opts]
    (recurrence/expand cal (quot (inst-ms from) 1000) (quot (inst-ms to) 1000)
                       (zone-opts opts))))
+
+(defn free-busy
+  "A VFREEBUSY of the busy time of the calendar `cal` between the insts
+  `from` and `to`, as a CalDAV server answers a free-busy query (RFC 4791,
+  section 7.10). It has a FREEBUSY of the periods of each type, in UTC,
+  with the overlapping ones merged:
+
+  - BUSY, of the events that are neither TRANSPARENT nor CANCELLED, and
+    of the busy periods of the calendar's VFREEBUSYs
+  - BUSY-TENTATIVE, of the TENTATIVE events
+
+  It takes the same `opts` as instant, and :now and :uid, the inst of its
+  DTSTAMP (now by default) and its UID (a random one by default)."
+  ([cal from to]
+   (free-busy cal from to {}))
+  ([cal from to opts]
+   (busy/free-busy cal (quot (inst-ms from) 1000) (quot (inst-ms to) 1000)
+                   (-> (zone-opts opts)
+                       (update :now #(quot (inst-ms (or % #?(:clj (java.util.Date.) :cljs (js/Date.))))
+                                           1000))
+                       (update :uid #(or % (str (random-uuid))))))))
 
 (defn validation-errors
   "The ways that `x`, a calendar or the text of one, breaks RFC 5545 and

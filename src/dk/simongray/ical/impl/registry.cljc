@@ -141,7 +141,26 @@
                :should-once #{:rrule}}
    ;; RFC 5545, section 3.6.6, with RFC 9074, section 5
    :valarm    {:required #{:action :trigger}
-               :once     #{:duration :repeat :uid :acknowledged}}})
+               :once     #{:duration :repeat :uid :acknowledged}}
+   ;; RFC 7953, section 3.1
+   :vavailability {:required  #{:dtstamp :uid}
+                   :once      #{:busytype :class :created :description :dtstart
+                                :last-modified :location :organizer :priority
+                                :sequence :summary :url :dtend :duration}
+                   :exclusive [[:dtend :duration]]}
+   :available     {:required  #{:dtstamp :dtstart :uid}
+                   :once      #{:created :description :last-modified :location
+                                :recurrence-id :rrule :summary :dtend :duration}
+                   :exclusive [[:dtend :duration]]}
+   ;; RFC 9073, sections 7.1 to 7.3
+   :participant   {:required #{:participant-type :uid}
+                   :once     #{:calendar-address :created :description :dtstamp
+                               :geo :last-modified :priority :sequence :status
+                               :summary :url}}
+   :vlocation     {:required #{:uid}
+                   :once     #{:description :geo :location-type :name}}
+   :vresource     {:required #{:uid}
+                   :once     #{:description :geo :name :resource-type}}})
 
 ;; RFC 5545, section 3.2.20, and RFC 9253, section 7
 (def value-types
