@@ -9,4 +9,8 @@
           ;; dev-resources, which a browser can't)
           :browser-test {:target    :browser-test
                          :test-dir  "target/browser-test"
-                         :ns-regexp "^dk\\.simongray\\.ical(?!\\.(corpus|libical)-test).*-test$"}}}
+                         :ns-regexp "^dk\\.simongray\\.ical(?!\\.(corpus|libical)-test).*-test$"}
+          ;; clojure -M:cljs release bench && node target/bench.js
+          :bench        {:target    :node-script
+                         :output-to "target/bench.js"
+                         :main      dk.simongray.ical.bench/-main}}}

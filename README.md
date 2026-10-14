@@ -230,6 +230,8 @@ npm install                       # once, for the Node tests
 clojure -M:cljs compile test      # the tests in Node
 clojure -M:cljs compile browser-test  # the tests in a browser, from target/browser-test
 clojure -X:tables                 # the tables from CLDR and RFC 5546
+clojure -M:bench -m dk.simongray.ical.bench          # benchmarks on the JVM
+clojure -M:cljs release bench && node target/bench.js # benchmarks in Node
 ```
 
 The fetch script downloads the test data of

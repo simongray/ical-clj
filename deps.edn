@@ -27,6 +27,10 @@
   :tables {:extra-paths ["dev"]
            :exec-fn     dk.simongray.ical.tables/write!}
 
+  ;; clojure -M:bench -m dk.simongray.ical.bench  (the benchmarks on the
+  ;; JVM)
+  :bench {:extra-paths ["dev"]}
+
   ;; clojure -M:test:tables:nrepl
   :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}}
           ;; lets nrepl interrupt runaway evaluations

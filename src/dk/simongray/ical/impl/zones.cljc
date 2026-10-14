@@ -71,16 +71,91 @@
              {}
              (.formatToParts f (js/Date. (* 1000 t))))))
 
+(defn- bisect
+  "The first instant after `a` and at most `b` when the offset that the
+  function `f` gives is no longer that at `a`, by bisection."
+  [f a b]
+  (let [before (f a)]
+    (loop [a a, b b]
+      (if (<= (- b a) 1)
+        b
+        (let [m (+ a (quot (- b a) 2))]
+          (if (= before (f m)) (recur m b) (recur a m)))))))
+
+;; No two transitions in the time zone database are closer than six days,
+;; so a scan in steps of three days finds them all
+(defn- scan
+  "The transitions of the offsets that the function `f` gives at each
+  instant, from the instant `from` to the instant `to`, each a vector of
+  its instant, the offset before it and the offset after it, in order."
+  [f from to]
+  (let [step (* 3 86400)]
+    (loop [t from, acc []]
+      (if (>= t to)
+        acc
+        (let [u (min to (+ t step))]
+          (if (= (f t) (f u))
+            (recur u acc)
+            (let [at (bisect f t u)]
+              (recur at (conj acc [at (f t) (f at)])))))))))
+
+(defn- offset-in
+  "The offset at the instant `t` of the `transitions`, a vector of pairs
+  of an instant and the offset from then on, in order, or `initial`
+  before the first, by bisection."
+  [transitions initial t]
+  (loop [lo 0, hi (dec (count transitions)), current initial]
+    (if (> lo hi)
+      current
+      (let [mid       (quot (+ lo hi) 2)
+            [at off]  (nth transitions mid)]
+        (if (<= at t)
+          (recur (inc mid) hi off)
+          (recur lo (dec mid) current))))))
+
+#?(:cljs
+   (defn- intl-offset
+     "The offset in seconds of the zone `iana` at the instant `t`, from the
+     parts of its Intl.DateTimeFormat."
+     [iana t]
+     (let [{:keys [year month day hour minute second bc?]} (local-fields (formatter iana) t)
+           year (if bc? (- 1 year) year)]
+       (- (civil/local-seconds year month day hour minute second) t))))
+
+#?(:cljs
+   (def ^:private year-tables
+     "The offsets of each zone and year that have been asked for, which is
+     emptied when it holds too many."
+     (atom {})))
+
+;; Formatting a date with Intl takes microseconds, and resolving one local
+;; time takes three or four offsets, so a year's transitions are found
+;; once and the offsets in it come from them
+#?(:cljs
+   (defn- year-table
+     "The offset of the zone `iana` at the start of the year `y` in UTC, as
+     :initial, and its :transitions in that year, pairs of an instant and
+     the offset from then on."
+     [iana y]
+     (let [k [iana y]]
+       (or (get @year-tables k)
+           (let [from  (* 86400 (civil/days-from-civil y 1 1))
+                 to    (* 86400 (civil/days-from-civil (inc y) 1 1))
+                 f     #(intl-offset iana %)
+                 table {:initial     (f from)
+                        :transitions (mapv (fn [[at _ after]] [at after]) (scan f from to))}]
+             (swap! year-tables #(assoc (if (< (count %) 4096) % {}) k table))
+             table)))))
+
 (defn- platform-offset
   "The offset in seconds of the platform's zone `iana` at the instant
   `t`."
   [iana t]
   #?(:clj  (-> (ZoneId/of iana) .getRules
                (.getOffset (Instant/ofEpochSecond t)) .getTotalSeconds)
-     :cljs (let [{:keys [year month day hour minute second bc?]}
-                 (local-fields (formatter iana) t)
-                 year (if bc? (- 1 year) year)]
-             (- (civil/local-seconds year month day hour minute second) t))))
+     :cljs (let [y                              (first (civil/civil-from-days (civil/floor-div t 86400)))
+                 {:keys [initial transitions]}  (year-table iana y)]
+             (offset-in transitions initial t))))
 
 (defn- first-value
   "The value of the first property named `k` of the component `c`."
@@ -182,20 +257,6 @@
       (swap! vtimezone-cache #(assoc (if (< (count %) 256) % {}) c z))
       z)))
 
-(defn- offset-in
-  "The offset at the instant `t` of the `transitions`, a vector of pairs
-  of an instant and the offset from then on, in order, or `initial`
-  before the first, by bisection."
-  [transitions initial t]
-  (loop [lo 0, hi (dec (count transitions)), current initial]
-    (if (> lo hi)
-      current
-      (let [mid       (quot (+ lo hi) 2)
-            [at off]  (nth transitions mid)]
-        (if (<= at t)
-          (recur (inc mid) hi off)
-          (recur lo (dec mid) current))))))
-
 (defn- transition-offset
   "The offset at the instant `t` of the zone with the `transitions`, pairs
   of an instant and the offset from then on, in order. Before the first,
@@ -224,33 +285,12 @@
   [zone t]
   (+ t (offset zone t)))
 
-(defn- bisect
-  "The first instant after `a` and at most `b` when the offset of the
-  `zone` is no longer that at `a`, by bisection."
-  [zone a b]
-  (let [before (offset zone a)]
-    (loop [a a, b b]
-      (if (<= (- b a) 1)
-        b
-        (let [m (+ a (quot (- b a) 2))]
-          (if (= before (offset zone m)) (recur m b) (recur a m)))))))
-
-;; No two transitions in the time zone database are closer than six days,
-;; so a scan in steps of three days finds them all
 (defn transitions
   "The transitions of the `zone` from the instant `from` to the instant
   `to`, each a vector of its instant, the offset before it and the offset
   after it, in order."
   [zone from to]
-  (let [step (* 3 86400)]
-    (loop [t from, acc []]
-      (if (>= t to)
-        acc
-        (let [u (min to (+ t step))]
-          (if (= (offset zone t) (offset zone u))
-            (recur u acc)
-            (let [at (bisect zone t u)]
-              (recur at (conj acc [at (offset zone t) (offset zone at)])))))))))
+  (scan #(offset zone %) from to))
 
 ;; RFC 5545, section 3.3.5: a local time that occurs twice is the first
 ;; of them, and one in a gap takes the offset from before the gap. The two
