@@ -1,10 +1,15 @@
 (ns dk.simongray.ical.tables
   "Write the table of Windows zone names in src from CLDR's
-  windowsZones.xml, which dev/fetch.sh downloads.
+  windowsZones.xml, which dev/fetch.sh downloads, and the table of past
+  zone transitions that the tests compare the platforms with.
 
-      clojure -X:tables"
+      clojure -X:tables
+      clojure -X:tables dk.simongray.ical.tables/write-transitions!"
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.tz :as tz]
+            [dk.simongray.ical.impl.zones :as zones]))
 
 (def source
   "The CLDR file that the table is made from."
@@ -42,3 +47,43 @@
                (str/join "\n   " (for [[k v] table] (str (pr-str k) " " (pr-str v))))
                "})\n"))
     (println "Wrote" (count table) "names to" target)))
+
+(def zone-names
+  "Zones whose past has the quirks of the time zone database: southern
+  summers, half and quarter hours, negative summer time, abolished summer
+  time, changed standard offsets and a day skipped at the date line."
+  ["Europe/Copenhagen" "America/New_York" "Australia/Sydney" "Asia/Tokyo"
+   "Asia/Kolkata" "Asia/Kathmandu" "Australia/Lord_Howe" "Europe/Dublin"
+   "Africa/Casablanca" "America/Sao_Paulo" "Asia/Tehran" "Europe/Moscow"
+   "Pacific/Apia" "America/Caracas" "Pacific/Chatham" "America/Santiago"])
+
+(def transitions-target
+  "The test namespace that holds the transitions."
+  "test/dk/simongray/ical/zone_transitions.cljc")
+
+(defn write-transitions!
+  "Write the transitions of the zone-names from 1990 to 2025, as the JVM
+  gives them, to the transitions-target."
+  [_]
+  (let [from  (* 86400 (civil/days-from-civil 1990 1 1))
+        to    (* 86400 (civil/days-from-civil 2025 1 1))
+        table (into (sorted-map)
+                    (for [z zone-names]
+                      [z (zones/transitions (tz/zone z) from to)]))]
+    (spit transitions-target
+          (str "(ns dk.simongray.ical.zone-transitions\n"
+               "  \"The transitions of a few zones from 1990 to 2025, each a vector of\n"
+               "  its instant, the offset before and the offset after, in seconds, as\n"
+               "  the JVM gives them. The past no longer changes, so every platform\n"
+               "  should give the same. Made by dev/dk/simongray/ical/tables.clj.\")\n\n"
+               "(def from " from ")\n\n"
+               "(def to " to ")\n\n"
+               "(def transitions\n"
+               "  {"
+               (str/join "\n   " (for [[k v] table]
+                                   (str (pr-str k) "\n   ["
+                                        (str/join "\n    " (for [row (partition-all 4 v)]
+                                                             (str/join " " (map pr-str row))))
+                                        "]")))
+               "})\n"))
+    (println "Wrote the transitions of" (count table) "zones to" transitions-target)))

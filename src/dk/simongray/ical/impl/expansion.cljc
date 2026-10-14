@@ -120,7 +120,9 @@
     (-> rule
         (day-defaults m d wd)
         (time-defaults hh mm ss date?)
-        (assoc :year (if (:byweekno rule) (week-year y day (:wkst rule)) y)
+        (assoc :year (if (and (:byweekno rule) (= "YEARLY" (:freq rule)))
+                       (week-year y day (:wkst rule))
+                       y)
                :month m
                :day day))))
 
@@ -185,12 +187,26 @@
   [xs n length]
   (some #(or (= % n) (= % (- n length 1))) xs))
 
+(defn- in-weeks?
+  "Whether the day `day` of the year `y` falls in one of the weeks
+  `byweekno` of its week-numbering year, with weeks that start on the
+  weekday `wkst`."
+  [byweekno y day wkst]
+  (let [wy    (week-year y day wkst)
+        start (week-one wy wkst)]
+    (in-signed? byweekno (inc (quot (- day start) 7))
+                (quot (- (week-one (inc wy) wkst) start) 7))))
+
+;; RFC 5545, section 3.3.10: BYWEEKNO is only for YEARLY rules, whose
+;; periods start from its weeks. Any other rule takes it as a limit, as
+;; dateutil does.
 (defn day-passes?
   "Whether the day `day` passes the BYMONTH, BYYEARDAY, BYMONTHDAY and
-  BYDAY parts of the `rule`."
-  [{:keys [bymonth byyearday bymonthday byday] :as rule} day]
+  BYDAY parts of the `rule`, and its BYWEEKNO when it isn't YEARLY."
+  [{:keys [freq bymonth byweekno byyearday bymonthday byday wkst] :as rule} day]
   (let [[y m d] (civil/civil-from-days day)]
     (and (or (nil? bymonth) (some #{m} bymonth))
+         (or (nil? byweekno) (= "YEARLY" freq) (in-weeks? byweekno y day wkst))
          (or (nil? byyearday)
              (in-signed? byyearday (inc (- day (civil/days-from-civil y 1 1)))
                          (civil/days-in-year y)))
