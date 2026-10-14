@@ -114,6 +114,14 @@ parses, writes and expands it:
 ;; => ("2026-01-31" "2026-03-31" "2026-05-31")
 ```
 
+To check a rule on its own, e.g. one that a form put together, ask for
+its validation errors:
+
+```clojure
+(rrule/validation-errors {:freq "WEEKLY" :count 4 :until "2026-12-31"})
+;; => [{:error :count-and-until, :level :error}]
+```
+
 As RFC 5545 says, a monthly rule from the 31st skips the shorter months.
 With RSCALE=GREGORIAN and SKIP=BACKWARD, as RFC 7529 has it, the rule
 takes their last day instead.

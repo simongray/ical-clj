@@ -10,10 +10,9 @@
     calendar
   - keys with the details, e.g. :property"
   (:require [clojure.string :as str]
-            [dk.simongray.ical.impl.civil :as civil]
-            [dk.simongray.ical.impl.expansion :as expansion]
             [dk.simongray.ical.impl.recurrence :as recurrence]
             [dk.simongray.ical.impl.registry :as registry]
+            [dk.simongray.ical.impl.rules :as rules]
             [dk.simongray.ical.tz :as tz]))
 
 (defn- error
@@ -109,62 +108,18 @@
           (when (and s e (if (= :due (:name end)) (< e s) (<= e s)))
             [(error :end-before-start :error (conj path :properties i))]))))))
 
-;; RFC 5545, section 3.3.10
+;; RFC 5545, section 3.3.10, and RFC 7529
 (defn- rule-errors
   "The errors in the recurrence rule of the property `p` at `path` of the
-  component whose DTSTART is `start`."
+  component whose DTSTART is the property `start`. DTSTART needn't be
+  synchronized with an EXRULE."
   [p path start]
-  (let [{:keys [freq until byday byweekno bysetpos] :as rule} (:value p)
-        ranges {:bysecond [0 60 false] :byminute [0 59 false] :byhour [0 23 false]
-                :bymonthday [1 31 true] :byyearday [1 366 true] :byweekno [1 53 true]
-                :bymonth [1 12 false] :bysetpos [1 366 true]}
-        err    #(error %1 :error path %2)]
-    (when (map? rule)
-      (concat
-       (for [[k [lo hi signed?]] ranges
-             v (get rule k)
-             :when (and (number? v)
-                        (not (or (<= lo v hi) (and signed? (<= (- hi) v (- lo))))))]
-         (err :rule-part-out-of-range {:part k :value v}))
-       ;; ordwk = 1*2DIGIT ; 1 to 53
-       (for [d     byday
-             :let  [ordinal (second (re-matches #"([+-]?\d+)[A-Z]{2}" d))]
-             :when (and ordinal (not (<= 1 (abs (parse-long (str/replace ordinal "+" ""))) 53)))]
-         (err :rule-part-out-of-range {:part :byday :value d}))
-       (when (and (:count rule) (:until rule))
-         [(err :count-and-until {})])
-       (when (zero? (or (:interval rule) 1))
-         [(err :rule-part-out-of-range {:part :interval :value 0})])
-       (when (and byweekno (not= "YEARLY" freq))
-         [(err :byweekno-not-yearly {})])
-       (when (and (some #(re-find #"\d" %) byday)
-                  (or (not (#{"MONTHLY" "YEARLY"} freq)) byweekno))
-         [(err :byday-ordinal-not-allowed {})])
-       (when (and bysetpos
-                  (not-any? rule [:bysecond :byminute :byhour :byday :bymonthday
-                                  :byyearday :byweekno :bymonth]))
-         [(err :bysetpos-alone {})])
-       (when (and start (date? start)
-                  (some rule [:bysecond :byminute :byhour]))
-         [(err :time-rule-with-date {})])
-       (when (and start (string? until) (string? (:value start)))
-         (let [zoned? (or (get-in start [:params :tzid]) (str/ends-with? (:value start) "Z"))]
-           (when (or (not= (date? start) (not (str/includes? until "T")))
-                     (and zoned? (not (date? start)) (not (str/ends-with? until "Z"))))
-             [(err :until-mismatch {})])))))))
-
-;; RFC 5545, section 3.8.5.3: DTSTART SHOULD be synchronized with the rule
-(defn- unsynchronized
-  "A warning when the rule of the property `p` at `path` doesn't make the
-  DTSTART `start`."
-  [p path start]
-  (let [rule (:value p)
-        v    (:value start)]
-    (when (and (map? rule) (string? v) (contains? #{nil "GREGORIAN"} (:rscale rule)))
-      (let [x     (civil/seconds v)
-            times (expansion/local-times (expansion/normalize rule x (date? start)) x)]
-        (when (not= x (first times))
-          [(error :unsynchronized-dtstart :warning path)])))))
+  (when (map? (:value p))
+    (let [v      (:value start)
+          zoned? (boolean (or (get-in start [:params :tzid]) (and (string? v) (str/ends-with? v "Z"))))]
+      (for [e     (rules/errors (:value p) (when (string? v) v) zoned?)
+            :when (not (and (= :exrule (:name p)) (= :unsynchronized-dtstart (:error e))))]
+        (assoc e :path path)))))
 
 ;; RFC 5545, section 3.8.7.2: DTSTAMP is in UTC
 (defn- dtstamp-errors
@@ -204,8 +159,7 @@
      (tzid-errors cal c path)
      (for [k [:rrule :exrule]
            [i p] (indexed c k)
-           e (concat (rule-errors p (conj path :properties i) start)
-                     (when (= :rrule k) (unsynchronized p (conj path :properties i) start)))]
+           e (rule-errors p (conj path :properties i) start)]
        e)
      (when (and (= :vtimezone (:name c))
                 (not-any? #(#{:standard :daylight} (:name %)) (:components c)))

@@ -35,6 +35,33 @@
            (rrule/serialize {:x-foo "bar" :byday ["MO" "WE"] :interval 2
                              :until "2026-12-31T23:00:00Z" :freq "WEEKLY"})))))
 
+(deftest validation
+  (testing "a rule on its own"
+    (is (= [] (rrule/validation-errors "FREQ=MONTHLY;BYDAY=2MO")))
+    (is (= [{:error :count-and-until :level :error}]
+           (rrule/validation-errors {:freq "WEEKLY" :count 4 :until "2026-12-31"})))
+    (is (= [{:error :rule-part-out-of-range :level :error :part :bymonthday :value 32}
+            {:error :byweekno-not-yearly :level :error}]
+           (rrule/validation-errors "FREQ=MONTHLY;BYMONTHDAY=32;BYWEEKNO=3")))
+    (is (= [{:error :skip-without-rscale :level :error}]
+           (rrule/validation-errors "FREQ=MONTHLY;SKIP=BACKWARD"))))
+  (testing "a map with parts of the wrong form, or no FREQ"
+    (is (= [{:error :invalid-part :level :error :part :freq :value "FORTNIGHTLY"}
+            {:error :invalid-part :level :error :part :byday :value ["MO" "XX"]}]
+           (rrule/validation-errors {:freq "FORTNIGHTLY" :byday ["MO" "XX"]})))
+    (is (= [{:error :missing-part :level :error :part :freq}]
+           (rrule/validation-errors {:byday ["MO"]})))
+    (is (= [{:error :invalid-value :level :error}] (rrule/validation-errors "nonsense"))))
+  (testing "with the start it would expand from"
+    (is (= [{:error :unsynchronized-dtstart :level :warning}]
+           (rrule/validation-errors "FREQ=WEEKLY;BYDAY=MO" "2026-10-14T10:00:00")))
+    (is (rrule/valid? "FREQ=WEEKLY;BYDAY=MO" "2026-10-14T10:00:00"))
+    (is (= [{:error :until-mismatch :level :error}]
+           (rrule/validation-errors "FREQ=DAILY;UNTIL=20261231T230000Z" "2026-10-14T10:00:00"))
+        "a floating start takes a floating UNTIL")
+    (is (= [] (rrule/validation-errors "FREQ=DAILY;UNTIL=20261231T230000Z" "2026-10-14T10:00:00"
+                                       (tz/zone "+02:00"))))))
+
 (deftest expansion
   (let [occ #(vec (take %3 (rrule/occurrences (rrule/parse %1) %2)))]
     (testing "a monthly rule from the 31st skips the shorter months"

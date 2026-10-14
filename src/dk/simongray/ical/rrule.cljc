@@ -10,6 +10,7 @@
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.expansion :as expansion]
+            [dk.simongray.ical.impl.rules :as rules]
             [dk.simongray.ical.impl.values :as values]
             [dk.simongray.ical.impl.zones :as zones]))
 
@@ -87,6 +88,42 @@
                                        (past-until (:until rule) start zone))]
        (map text (cond->> xs
                    (and zone (not date?) (not utc?)) (zones/wall-times zone)))))))
+
+(defn validation-errors
+  "The ways that the recurrence `rule`, a map or its text, breaks RFC 5545,
+  section 3.3.10, and RFC 7529, as a vector of maps like those of
+  ical/validation-errors, without :path. Each has an :error, e.g.
+  :count-and-until or :rule-part-out-of-range, a :level, and keys with the
+  details, e.g. :part and :value.
+
+  A map that a person or a program built can have parts of the wrong
+  form, e.g. a FREQ of \"FORTNIGHTLY\", and then those are the errors.
+  Given the `start` it would expand from, it also checks the rule with
+  it, e.g. that UNTIL has the same type, and that the rule generates
+  `start`. A local `start` is floating, unless a `zone` (from tz/zone) is
+  given.
+
+      (validation-errors {:freq \"WEEKLY\" :count 4 :until \"2026-12-31\"})
+      ;; => [{:error :count-and-until :level :error}]"
+  ([rule]
+   (validation-errors rule nil nil))
+  ([rule start]
+   (validation-errors rule start nil))
+  ([rule start zone]
+   (let [rule (if (string? rule) (parse rule) rule)]
+     (if (map? rule)
+       (rules/errors rule start (boolean (or zone (and (string? start) (str/ends-with? start "Z")))))
+       [{:error :invalid-value :level :error}]))))
+
+(defn valid?
+  "Whether the recurrence `rule` has no validation errors other than
+  warnings. It takes the same arguments as validation-errors."
+  ([rule]
+   (valid? rule nil nil))
+  ([rule start]
+   (valid? rule start nil))
+  ([rule start zone]
+   (not-any? #(= :error (:level %)) (validation-errors rule start zone))))
 
 (comment
   (take 5 (occurrences (parse "FREQ=MONTHLY;BYDAY=TU,WE,TH;BYSETPOS=3")
