@@ -102,4 +102,38 @@
              (occ "RSCALE=GREGORIAN;FREQ=MONTHLY;SKIP=FORWARD" "2026-01-31" 3))))
     (testing "rules in another calendar aren't expanded"
       (is (nil? (rrule/occurrences (rrule/parse "RSCALE=CHINESE;FREQ=YEARLY")
-                                   "2026-10-12"))))))
+                                   "2026-10-12"))))
+    (testing "SKIP keeps to BYMONTH, and moves no day onto another instance"
+      (is (= ["2026-01-31" "2026-03-31" "2027-03-31"]
+             (occ "RSCALE=GREGORIAN;FREQ=MONTHLY;SKIP=FORWARD;BYMONTHDAY=31;BYMONTH=3"
+                  "2026-01-31" 3)))
+      (is (= ["2026-01-01" "2026-01-31" "2026-02-01" "2026-03-01" "2026-03-31"]
+             (occ "RSCALE=GREGORIAN;FREQ=MONTHLY;SKIP=FORWARD;BYMONTHDAY=1,31"
+                  "2026-01-01" 5))))
+    (testing "the 60th second of a minute is the next minute, once"
+      (is (= ["2026-01-01T10:00:00" "2026-01-01T10:01:00" "2026-01-01T10:02:00"]
+             (occ "FREQ=MINUTELY;BYSECOND=0,60" "2026-01-01T10:00:00" 3))))
+    (testing "no instance comes after the year 9999"
+      (is (= ["9999-12-29" "9999-12-30" "9999-12-31"]
+             (occ "FREQ=DAILY;COUNT=6" "9999-12-29" 6)))
+      (is (= ["2026-01-01"] (occ "FREQ=YEARLY;INTERVAL=999999999" "2026-01-01" 2))))
+    (testing "COUNT=0 keeps DTSTART"
+      (is (= ["2026-01-01"] (occ "FREQ=DAILY;COUNT=0" "2026-01-01" 2))))
+    (testing "with a zone, a UTC start compares with a UTC UNTIL as it is"
+      (is (= ["2026-01-01T10:00:00Z" "2026-01-02T10:00:00Z"]
+             (vec (rrule/occurrences {:freq "DAILY" :until "2026-01-03T09:30:00Z"}
+                                     "2026-01-01T10:00:00Z" (tz/zone "Europe/Copenhagen")))))))
+  (testing "rules that rarely or never make a time are quick"
+    ;; on the JVM, a slow one times out rather than holding up the tests
+    (let [quick (fn [f] #?(:clj (deref (future (f)) 2000 :timeout) :cljs (f)))
+          occ   (fn [rule start n] (quick #(vec (take n (rrule/occurrences rule start)))))]
+      (is (= ["2026-01-01T00:00:00"] (occ {:freq "HOURLY" :interval 2 :byhour [1]}
+                                          "2026-01-01T00:00:00" 2)))
+      (is (= ["2026-01-01T10:00:00"] (occ {:freq "MINUTELY" :byhour [24]}
+                                          "2026-01-01T10:00:00" 2)))
+      (is (= ["2026-01-01T10:00:00" "2026-01-02T09:00:00" "2026-01-03T09:00:00"]
+             (occ {:freq "SECONDLY" :byhour [9] :byminute [0] :bysecond [0]}
+                  "2026-01-01T10:00:00" 3)))
+      (is (= [{:error :unsynchronized-dtstart :level :warning}]
+             (quick #(rrule/validation-errors {:freq "SECONDLY" :bysecond [60]}
+                                              "2026-01-01T10:00:00")))))))

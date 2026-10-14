@@ -86,8 +86,10 @@
 
 ;; RFC 5545, section 3.3.6: dur-value = (["+"] / "-") "P" (dur-date /
 ;; dur-time / dur-week), where the time's parts can't skip one in between
+;; up to nine digits each, so that a duration's seconds don't overflow a
+;; long, nor lose precision in JavaScript
 (def ^:private duration-pattern
-  #"[+-]?P(?:\d+W|(?:\d+D)?(?:T(?:\d+H(?:\d+M(?:\d+S)?)?|\d+M(?:\d+S)?|\d+S))?)")
+  #"[+-]?P(?:\d{1,9}W|(?:\d{1,9}D)?(?:T(?:\d{1,9}H(?:\d{1,9}M(?:\d{1,9}S)?)?|\d{1,9}M(?:\d{1,9}S)?|\d{1,9}S))?)")
 
 (defn read-duration
   "The duration in the text `s`, e.g. PT2H, in upper case."

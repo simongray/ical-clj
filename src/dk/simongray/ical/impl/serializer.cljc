@@ -39,7 +39,7 @@
 (defn write-component
   "The content lines of the component `c`, from its BEGIN to its END."
   [{k :name :keys [properties components]}]
-  (let [n (str/upper-case (name k))]
+  (let [n (str/upper-case (lines/keyword-text k))]
     (str "BEGIN:" n "\r\n"
          (apply str (map write-property properties))
          (apply str (map write-component components))

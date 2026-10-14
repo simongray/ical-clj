@@ -57,9 +57,9 @@
     (let [utc?  (str/ends-with? until "Z")
           limit (cond-> (civil/seconds until)
                   (and (date? until) (not (date? start))) (+ 86399))]
-      (cond
-        (and utc? zone)                        #(> (zones/instant zone %) limit)
-        :else                                  #(> % limit)))))
+      (if (and utc? zone (not (str/ends-with? start "Z")))
+        #(> (zones/instant zone %) limit)
+        #(> % limit)))))
 
 (defn occurrences
   "The instances that the `rule` generates from `start`, a date or a

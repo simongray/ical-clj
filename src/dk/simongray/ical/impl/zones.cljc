@@ -187,21 +187,20 @@
   it starts, in order. It's nil when it lacks a DTSTART or an offset."
   [c]
   (let [start  (first-value c :dtstart)
-        from   (first-value c :tzoffsetfrom)
-        to     (first-value c :tzoffsetto)
+        from   (civil/offset-seconds (first-value c :tzoffsetfrom))
+        to     (civil/offset-seconds (first-value c :tzoffsetto))
         rule   (first-value c :rrule)
         rdates (->> (filter #(= :rdate (:name %)) (:properties c))
                     (mapcat :value)
                     (filter local-text?))]
-    (when (and (local-text? start) (string? from) (string? to))
-      (let [from  (civil/offset-seconds from)
-            x     (civil/seconds start)
+    (when (and (local-text? start) from to)
+      (let [x     (civil/seconds start)
             until (when (and (map? rule) (local-text? (:until rule)))
                     (civil/seconds (:until rule)))
             past? (when until #(> (- % from) until))
             xs    (if (map? rule) (expansion/rule-times rule x false past?) [x])]
         {:from   from
-         :to     (civil/offset-seconds to)
+         :to     to
          :start  x
          :onsets (map #(- % from)
                       (merge-sorted identity xs (sort (map civil/seconds rdates))))}))))

@@ -75,7 +75,10 @@
          :when (and ordinal (not (<= 1 (abs (parse-long (str/replace ordinal "+" ""))) 53)))]
      (error :rule-part-out-of-range {:part :byday :value d}))
    (when (= 0 interval)
-     [(error :rule-part-out-of-range {:part :interval :value 0})])))
+     [(error :rule-part-out-of-range {:part :interval :value 0})])
+   ;; DTSTART always counts as the first instance, so there's at least one
+   (when (= 0 (:count rule))
+     [(error :rule-part-out-of-range {:part :count :value 0})])))
 
 (defn- combination-errors
   "The errors of the parts of the `rule` that can't go together."
@@ -125,20 +128,21 @@
   [rule start]
   (when (contains? #{nil "GREGORIAN"} (:rscale rule))
     (let [x (civil/seconds start)]
-      (when (not= x (first (expansion/local-times (expansion/normalize rule x (date? start)) x)))
+      (when-not (expansion/generates? (expansion/normalize rule x (date? start)) x)
         [(error :unsynchronized-dtstart :warning {})]))))
 
 (defn errors
   "The errors of the recurrence `rule`, and with its DTSTART `start` (a
   date or a date-time, or nil), which is `zoned?` when it has a zone or is
   in UTC, the errors of the rule with it. A rule whose parts aren't of
-  the form of a parsed rule has only those errors."
+  the form of a parsed rule has only those errors, and a `start` that
+  isn't a date or a date-time is ignored."
   [rule start zoned?]
   (let [shape (shape-errors rule)]
     (vec (if (seq shape)
            shape
            (concat (range-errors rule)
                    (combination-errors rule)
-                   (when (string? start)
+                   (when (civil/date-text? start)
                      (concat (start-errors rule start zoned?)
                              (unsynchronized rule start))))))))

@@ -156,6 +156,13 @@
   [s]
   (keyword (str/lower-case (str/trim s))))
 
+;; a name with a slash, which a BEGIN line or a parameter can have, reads
+;; as a keyword with a namespace
+(defn keyword-text
+  "The text of the keyword `k` of a name, with its namespace."
+  [k]
+  (subs (str k) 1))
+
 ;; RFC 5545, section 3.1: contentline = name *(";" param) ":" value, where
 ;; a name is an iana-token or an x-name, of letters, digits and dashes.
 ;; vCard (RFC 6350, section 3.3) puts a group and a dot before it.
@@ -190,7 +197,7 @@
   "The text of the parameters `params`, each after a semicolon."
   [params]
   (apply str (for [[k v] params]
-               (str ";" (str/upper-case (name k)) "="
+               (str ";" (str/upper-case (keyword-text k)) "="
                     (if (sequential? v)
                       (str/join "," (map write-param-value v))
                       (write-param-value v))))))
@@ -247,7 +254,7 @@
   "The content line of the property named `k` with the `params` and the
   value text `text`, folded."
   [k params text]
-  (fold (str (str/upper-case (name k)) (write-params params) ":" text)))
+  (fold (str (str/upper-case (keyword-text k)) (write-params params) ":" text)))
 
 (comment
   (lines (str "BEGIN:VEVENT\r\nSUMMARY:A long\r\n  summary\r\n"

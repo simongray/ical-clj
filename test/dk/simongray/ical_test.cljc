@@ -124,7 +124,11 @@
     (is (nil? (ical/parse "nothing here"))))
   (testing "a byte order mark"
     (is (= {:name :vcalendar :properties [{:name :version :value "2.0"}]}
-           (ical/parse "﻿BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n")))))
+           (ical/parse "﻿BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"))))
+  (testing "names with a solidus, which read as keywords with a namespace"
+    (let [s (crlf "BEGIN:VCALENDAR;TZID=EUROPE/COPENHAGEN" "X-A;X-P/Q=1:b"
+                  "END:VCALENDAR;TZID=EUROPE/COPENHAGEN")]
+      (is (= s (ical/serialize (ical/parse s)))))))
 
 (defn utf-8
   "The bytes of the string `s` in UTF-8, a byte array or a Uint8Array."

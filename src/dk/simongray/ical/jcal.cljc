@@ -6,6 +6,7 @@
   A calendar's values already take jCal's forms, so only the shape of its
   components, properties and parameters changes."
   (:require [clojure.string :as str]
+            [dk.simongray.ical.impl.lines :as lines]
             [dk.simongray.ical.impl.registry :as registry]))
 
 (defn- property->jcal
@@ -13,13 +14,13 @@
   [{k :name :keys [params value] :as p}]
   (let [entry  (registry/property k)
         type   (or (:type p) (:type entry))
-        params (into {} (for [[pk pv] params] [(name pk) pv]))
+        params (into {} (for [[pk pv] params] [(lines/keyword-text pk) pv]))
         jvalue (fn [v]
                  (cond
                    (and (= :period type) (map? v)) [(:start v) (or (:end v) (:duration v))]
                    (and (= :recur type) (map? v))  (into {} (for [[rk rv] v] [(name rk) rv]))
                    :else                           v))]
-    (into [(name k) params (name type)]
+    (into [(lines/keyword-text k) params (name type)]
           (if (and (:list? entry) (not= :unknown type) (sequential? value))
             (map jvalue value)
             [(jvalue value)]))))
@@ -28,9 +29,13 @@
   "The component `c`, usually a VCALENDAR, as jCal (RFC 7265, section
   3.3): a vector of its name, its properties and its components."
   [c]
-  [(name (:name c))
+  [(lines/keyword-text (:name c))
    (mapv property->jcal (:properties c))
    (mapv calendar->jcal (:components c))])
+
+(def ^:private by-parts
+  "The BYxxx parts of a recurrence rule other than BYDAY."
+  #{:bysecond :byminute :byhour :bymonthday :byyearday :byweekno :bymonth :bysetpos})
 
 ;; RFC 7265, section 3.6.10: a BYxxx part can be a single value or an
 ;; array, and FREQ and WKST keep their case
@@ -42,7 +47,7 @@
              [k (cond
                   (#{:freq :wkst :rscale :skip} k)    (str/upper-case v)
                   (= :byday k)                        (mapv str/upper-case (if (sequential? v) v [v]))
-                  (str/starts-with? (name k) "by")    (if (sequential? v) (vec v) [v])
+                  (by-parts k)                        (if (sequential? v) (vec v) [v])
                   :else                               v)])))
 
 (defn- jcal->value

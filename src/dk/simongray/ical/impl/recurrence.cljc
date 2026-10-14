@@ -24,27 +24,20 @@
   [c k]
   (first (props c k)))
 
-(defn- date-text?
-  "Whether `v` is a date or a date-time in the form of jCal."
-  [v]
-  (and (string? v) (boolean (re-matches #"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z?)?" v))))
-
 (defn frame
   "The frame of the property `p` in the calendar `cal`, with its TZID
-  resolved by tz/zone with `opts`. A floating time takes the zone
-  :floating of `opts`, when given. A value that isn't a date or a
-  date-time has no frame."
+  resolved by tz/zone with `opts`. A floating time, or one with a TZID
+  that doesn't resolve, takes the zone :floating of `opts`, when given. A
+  value that isn't a date or a date-time has no frame."
   [cal p opts]
   (let [v (cond-> (:value p) (sequential? (:value p)) first)
         v (if (map? v) (:start v) v)]
-    (when (date-text? v)
+    (when (civil/date-text? v)
       (let [tzid (get-in p [:params :tzid])]
         {:date? (not (str/includes? v "T"))
          :utc?  (str/ends-with? v "Z")
-         :zone  (cond
-                  (str/ends-with? v "Z") nil
-                  tzid                   (tz/zone cal tzid opts)
-                  :else                  (:floating opts))}))))
+         :zone  (when-not (str/ends-with? v "Z")
+                  (or (when tzid (tz/zone cal tzid opts)) (:floating opts)))}))))
 
 (defn epoch
   "The instant of the local time `x` in the `frame`, or nil for a floating
@@ -85,7 +78,7 @@
               :when from
               v     (:value p)
               :let  [v (if (map? v) (:start v) v)]
-              :when (date-text? v)]
+              :when (civil/date-text? v)]
           (in-frame from (civil/seconds v) to))))
 
 (defn- periods-of
@@ -110,7 +103,7 @@
   UNTIL `until` of a rule, or nil without one. A date as UNTIL for a
   date-time DTSTART ends with its day."
   [fr until]
-  (when (date-text? until)
+  (when (civil/date-text? until)
     (let [limit (cond-> (civil/seconds until)
                   (and (not (str/includes? until "T")) (not (:date? fr))) (+ 86399))]
       (if (and (str/ends-with? until "Z") (:zone fr))
@@ -119,12 +112,13 @@
 
 (defn- rule-times
   "The local times that the rules of the properties `ps` generate from the
-  local time `start` in the frame `fr`, as one sorted seq per rule."
-  [ps start fr]
+  local time `start` in the frame `fr`, as one sorted seq per rule, by
+  the function `f` of the expansion namespace."
+  [f ps start fr]
   (for [p     ps
         :let  [rule (:value p)]
         :when (and (map? rule) (rrule/expandable? rule))]
-    (expansion/rule-times rule start (:date? fr) (until-past fr (:until rule)))))
+    (f rule start (:date? fr) (until-past fr (:until rule)))))
 
 (defn- merge-sorted
   "The sorted sequences `xss` merged into one sorted sequence without
@@ -134,7 +128,7 @@
    (let [xss (remove empty? (map seq xss))]
      (when (seq xss)
        (let [x (apply min (map first xss))]
-         (cons x (merge-sorted (map #(if (= x (first %)) (rest %) %) xss))))))))
+         (cons x (merge-sorted (map (fn [xs] (drop-while #(= x %) xs)) xss))))))))
 
 (defn- remove-sorted
   "The sorted sequence `xs` without the times of the sorted sequence `ys`,
@@ -150,27 +144,33 @@
 
 ;; RFC 5545, section 3.8.5.3: the recurrence set is DTSTART with the
 ;; instances of the RRULEs and RDATEs, without those of the EXDATEs and
-;; EXRULEs, and duplicates are ignored
+;; EXRULEs, and duplicates are ignored. The rules' times that the clocks
+;; skip have moved forward by the time they're excluded, as the EXDATEs
+;; of them have.
 (defn ids
   "The recurrence ids of the component `c` in the calendar `cal`, local
   times in the frame `fr` of its DTSTART, which is `start`, in order, as a
   lazy sequence."
   [cal c fr start opts]
-  (let [rules     (rule-times (props c :rrule) start fr)
-        rdates    (times-of cal (props c :rdate) fr opts)
-        included  (merge-sorted (concat (if (seq rules) rules [[start]]) [rdates]))
-        exdates   (props c :exdate)
-        ;; a date EXDATE of a date-time DTSTART removes its day
-        by-date   (when-not (:date? fr)
-                    (filter #(some (fn [v] (not (str/includes? (str v) "T"))) (:value %))
-                            exdates))
-        by-time   (remove (set by-date) exdates)
-        excluded  (merge-sorted (cons (times-of cal by-time fr opts)
-                                      (rule-times (props c :exrule) start fr)))]
-    (cond->> (cond-> (remove-sorted included excluded false)
-               (seq by-date)
-               (remove-sorted (times-of cal by-date (assoc fr :date? true) opts) true))
-      (and (:zone fr) (not (:date? fr))) (zones/wall-times (:zone fr)))))
+  (let [wall     (if (and (:zone fr) (not (:date? fr)))
+                   #(zones/wall-times (:zone fr) %)
+                   identity)
+        rules    (rule-times expansion/rule-times (props c :rrule) start fr)
+        rdates   (times-of cal (props c :rdate) fr opts)
+        included (wall (merge-sorted (concat (if (seq rules) rules [[start]]) [rdates])))
+        exdates  (props c :exdate)
+        ;; a date EXDATE of a date-time DTSTART removes its day, whatever
+        ;; the zone
+        by-date  (when-not (:date? fr)
+                   (filter #(some (fn [v] (not (str/includes? (str v) "T"))) (:value %))
+                           exdates))
+        days     (sort (for [p by-date, v (:value p) :when (civil/date-text? v)]
+                         (civil/seconds v)))
+        excluded (merge-sorted
+                  (cons (times-of cal (remove (set by-date) exdates) fr opts)
+                        (map wall (rule-times expansion/exclusion-times (props c :exrule) start fr))))]
+    (cond-> (remove-sorted included excluded false)
+      (seq days) (remove-sorted days true))))
 
 (defn- shift-end
   "The property `p` of the end of a component that started at the local
@@ -178,8 +178,15 @@
   that it keeps its exact duration (section 3.8.5.3)."
   [cal p fr start start' opts]
   (let [efr (frame cal p opts)]
-    (if (nil? efr)
+    (cond
+      (nil? efr)
       p
+
+      ;; dates have days of nominal length
+      (:date? fr)
+      (assoc p :value (text efr (+ start' (- (civil/seconds (:value p)) start))))
+
+      :else
       (let [end   (civil/seconds (:value p))
             exact (if (and (epoch efr end) (epoch fr start))
                     (- (epoch efr end) (epoch fr start))
@@ -206,22 +213,28 @@
   [c ks]
   (update c :properties #(vec (remove (comp ks :name) %))))
 
-(defn instance
+(defn- recurrence-id
+  "The RECURRENCE-ID property of the instance at the local time `id` of a
+  component whose DTSTART is the property `dtstart`, in its frame `fr`."
+  [dtstart fr id]
+  (let [params (dissoc (:params dtstart) :range)]
+    (cond-> {:name :recurrence-id}
+      (seq params)    (assoc :params params)
+      (:type dtstart) (assoc :type (:type dtstart))
+      true            (assoc :value (text fr id)))))
+
+(defn- instance
   "The instance of the component `c`, whose DTSTART is the local time
   `start` in the frame `fr`, that starts at the local time `start'` and has
-  the recurrence id `id`: `c` without its rules, with its DTSTART moved,
-  its DTEND or DUE moved to keep its duration (or the `period` of an
-  RDATE), and the RECURRENCE-ID `id`."
-  [cal c fr start start' id period opts]
+  the RECURRENCE-ID property `rid`: `c` without its rules, with its
+  DTSTART moved, its DTEND or DUE moved to keep its duration (or the
+  `period` of an RDATE), and `rid`."
+  [cal c fr start start' rid period opts]
   (let [dtstart (prop c :dtstart)
-        params  (dissoc (:params dtstart) :range)
         moved   (-> c
                     (without #{:rrule :rdate :exdate :exrule :recurrence-id})
                     (with-property (assoc dtstart :value (text fr start')))
-                    (with-property (cond-> {:name :recurrence-id}
-                                     (seq params)    (assoc :params params)
-                                     (:type dtstart) (assoc :type (:type dtstart))
-                                     true            (assoc :value (text fr id)))))]
+                    (with-property rid))]
     (cond
       (:end period)
       (-> (without moved #{:duration :due})
@@ -258,38 +271,54 @@
   the day after a DTSTART that is a date, or its DTSTART. It's nil without
   a DTSTART or an end."
   [cal c opts]
-  (let [k       (if (= :vtodo (:name c)) :due :dtend)
-        dtstart (prop c :dtstart)
-        fr      (frame cal dtstart opts)
-        moved   #(-> dtstart
-                     (assoc :name k :value (text fr %))
-                     (cond-> (:date? fr) (assoc :type :date)))]
+  (let [k        (if (= :vtodo (:name c)) :due :dtend)
+        dtstart  (prop c :dtstart)
+        duration (prop c :duration)
+        fr       (frame cal dtstart opts)
+        moved    #(-> dtstart
+                      (assoc :name k :value (text fr %))
+                      (cond-> (:date? fr) (assoc :type :date)))]
     (cond
       (prop c k)               (prop c k)
       (nil? fr)                nil
-      (prop c :duration)       (let [d (:value (prop c :duration))]
-                                 (when (string? d)
-                                   (moved (plus-duration fr (civil/seconds (:value dtstart)) d))))
+      (and (string? (:value duration)) (not= :unknown (:type duration)))
+      (moved (plus-duration fr (civil/seconds (:value dtstart)) (:value duration)))
       (:date? fr)              (moved (+ 86400 (civil/seconds (:value dtstart))))
       :else                    (assoc dtstart :name k))))
+
+;; expand looks up the components of each UID in an index, rather than in
+;; the whole calendar each time
+(defn- related
+  "The components of the calendar `cal` with the name and the UID of the
+  component `c`, itself included, from the index ::related of `opts` when
+  it has one."
+  [cal c opts]
+  (let [k [(:name c) (:value (prop c :uid))]]
+    (if-let [index (::related opts)]
+      (get index k)
+      (filter #(= k [(:name %) (:value (prop % :uid))]) (:components cal)))))
+
+(defn- sequence-number
+  "The SEQUENCE of the component `c`, or 0 when it has none that's a
+  number."
+  [c]
+  (let [v (:value (prop c :sequence))]
+    (if (number? v) v 0)))
 
 (defn- overrides
   "The components of the calendar `cal` that override instances of the
   component `c`, by their recurrence ids as local times in the frame `fr`.
   Of two for the same instance, the one with the higher SEQUENCE wins."
   [cal c fr opts]
-  (let [uid (:value (prop c :uid))]
-    (->> (:components cal)
-         (filter #(and (= (:name c) (:name %))
-                       (= uid (:value (prop % :uid)))
-                       (prop % :recurrence-id)))
-         (keep (fn [o]
-                 (let [p   (prop o :recurrence-id)
-                       ofr (frame cal p opts)]
-                   (when ofr
-                     [(in-frame ofr (civil/seconds (:value p)) fr) o]))))
-         (sort-by #(or (:value (prop (second %) :sequence)) 0))
-         (into (sorted-map)))))
+  (->> (related cal c opts)
+       (filter #(prop % :recurrence-id))
+       (keep (fn [o]
+               (let [p   (prop o :recurrence-id)
+                     ofr (frame cal p opts)]
+                 (when ofr
+                   [(in-frame ofr (civil/seconds (:value p)) fr) o]))))
+       (sort-by #(sequence-number (second %)))
+       (into (sorted-map))))
 
 ;; RFC 5545, section 3.8.4.4: with RANGE=THISANDFUTURE, an override moves
 ;; the instances after it by the same time, and gives them its duration
@@ -310,13 +339,18 @@
       (when (string? v)
         (epoch fr (civil/seconds v))))))
 
+(defn- floating-or-utc
+  "The `opts` with UTC as the zone :floating, unless they give one."
+  [opts]
+  (update opts :floating #(or % {:tzid "UTC" :offset 0})))
+
 (defn- span
   "The instants of the start and the end of the component `c`, as a pair,
-  with a floating time counted as UTC."
+  with a floating time in the zone :floating of `opts`, or else in UTC."
   [cal c opts]
-  (let [utc   (assoc opts :floating {:tzid "UTC" :offset 0})
-        start (instant-of cal (prop c :dtstart) utc)
-        end   (some->> (end cal c opts) (#(instant-of cal % utc)))]
+  (let [opts  (floating-or-utc opts)
+        start (instant-of cal (prop c :dtstart) opts)
+        end   (some->> (end cal c opts) (#(instant-of cal % opts)))]
     (when start [start (or end start)])))
 
 ;; RFC 4791, section 9.9: a component without a duration overlaps a range
@@ -338,25 +372,22 @@
   (boolean (or (prop c :rrule) (prop c :rdate))))
 
 (defn- override?
-  "Whether the component `c` overrides an instance of a recurring one in
-  the calendar `cal`."
-  [cal c]
+  "Whether the component `c` overrides an instance of another, recurring
+  component in the calendar `cal`."
+  [cal c opts]
   (when (prop c :recurrence-id)
-    (let [uid (:value (prop c :uid))]
-      (some #(and (= (:name c) (:name %)) (= uid (:value (prop % :uid))) (recurring? %))
-            (:components cal)))))
+    (some #(and (not (identical? c %)) (recurring? %)) (related cal c opts))))
 
 (defn- earliest-move
   "The longest time by which a component of the calendar `cal` moves an
   instance of the component `c` earlier than its recurrence id, in
-  seconds, or 0. A floating time counts as UTC."
+  seconds, or 0. A floating time is in the zone :floating of `opts`, or
+  else in UTC."
   [cal c opts]
-  (let [utc (assoc opts :floating {:tzid "UTC" :offset 0})
-        uid (:value (prop c :uid))]
-    (reduce max 0 (for [o     (:components cal)
-                        :when (and (= (:name c) (:name o)) (= uid (:value (prop o :uid))))
-                        :let  [r (instant-of cal (prop o :recurrence-id) utc)
-                               s (instant-of cal (prop o :dtstart) utc)]
+  (let [opts (floating-or-utc opts)]
+    (reduce max 0 (for [o     (related cal c opts)
+                        :let  [r (instant-of cal (prop o :recurrence-id) opts)
+                               s (instant-of cal (prop o :dtstart) opts)]
                         :when (and r s)]
                     (- r s)))))
 
@@ -367,10 +398,10 @@
   overlap the instants `from` to `to`. They're looked for up to the first
   whose recurrence id is past `to` by more than any override moves one."
   [cal c from to opts]
-  (let [utc   (assoc opts :floating {:tzid "UTC" :offset 0})
+  (let [fopts (floating-or-utc opts)
         until (+ to (earliest-move cal c opts))]
-    (->> (occurrences cal c opts)
-         (take-while #(< (or (instant-of cal (prop % :recurrence-id) utc) 0) until))
+    (->> (occurrences cal c (assoc opts ::after from))
+         (take-while #(when-let [t (instant-of cal (prop % :recurrence-id) fopts)] (< t until)))
          (filter #(overlaps? cal % from to opts)))))
 
 ;; RFC 4791, section 9.6.5
@@ -379,21 +410,53 @@
   instances that overlap the instants `from` to `to`, and its other
   components with a DTSTART kept when they overlap them."
   [cal from to opts]
-  (assoc cal :components
-         (vec (mapcat (fn [c]
-                        (cond
-                          (override? cal c)  []
-                          (recurring? c)     (instances-in cal c from to opts)
-                          (prop c :dtstart)  (if (overlaps? cal c from to opts) [c] [])
-                          :else              [c]))
-                      (:components cal)))))
+  (let [opts (assoc opts ::related (group-by #(vector (:name %) (:value (prop % :uid)))
+                                             (:components cal)))]
+    (assoc cal :components
+           (vec (mapcat (fn [c]
+                          (cond
+                            (override? cal c opts) []
+                            (recurring? c)         (instances-in cal c from to opts)
+                            (prop c :dtstart)      (if (overlaps? cal c from to opts) [c] [])
+                            :else                  [c]))
+                        (:components cal))))))
+
+(defn- local-in
+  "The local time in the frame `fr` of the date or date-time property `p`
+  of the calendar `cal`, or nil."
+  [p cal fr opts]
+  (when-let [pfr (and p (frame cal p opts))]
+    (in-frame pfr (civil/seconds (:value p)) fr)))
+
+;; A day either side covers the difference between a local time and an
+;; instant
+(defn- reach
+  "The longest time in seconds from the recurrence id of an instance of
+  the component `c`, whose DTSTART is the local time `start` in the frame
+  `fr`, to its end, unless an override that isn't `ranged` replaces it:
+  the time to its DTEND or DUE, to the end of an RDATE's `periods`, or by
+  a `ranged` override, plus a day."
+  [cal c fr start periods ranged opts]
+  (+ 86400
+     (reduce max 0
+             (concat
+              [(some-> (end cal c opts) (local-in cal fr opts) (- start))]
+              (for [[t v] periods]
+                (- (or (:end v) (plus-duration fr t (:duration v))) t))
+              (for [[r o] ranged
+                    :let  [e (some-> (end cal o opts) (local-in cal fr opts))]
+                    :when e]
+                (- e r))))))
 
 (defn occurrences
   "The instances of the component `c` of the calendar `cal`, each a
   component with its RECURRENCE-ID, in the order of their recurrence ids,
   as a lazy sequence. An instance that a component of `cal` overrides is
   that component. A component that doesn't recur is its only instance,
-  and one without a DTSTART has none."
+  and one without a DTSTART has none.
+
+  With the instant ::after in `opts`, it can leave out the instances that
+  end before it."
   [cal c opts]
   (let [dtstart (prop c :dtstart)
         fr      (frame cal dtstart opts)]
@@ -405,17 +468,26 @@
             periods (periods-of cal c fr opts)
             overs   (overrides cal c fr opts)
             ranged  (into (sorted-map)
-                          (filter #(= "THISANDFUTURE"
-                                      (some-> (prop (val %) :recurrence-id) :params :range
-                                              str str/upper-case))
+                          (filter #(and (= "THISANDFUTURE"
+                                           (some-> (prop (val %) :recurrence-id) :params :range
+                                                   str str/upper-case))
+                                        (frame cal (prop (val %) :dtstart) opts))
                                   overs))
-            ids     (merge-sorted [(ids cal c fr start opts) (keys overs)])]
+            after   (when-let [t (::after opts)]
+                      (- t (reach cal c fr start periods ranged opts)))
+            ids     (cond->> (merge-sorted [(ids cal c fr start opts) (keys overs)])
+                      after (remove #(and (< % after) (not (contains? overs %)))))]
         (map (fn [id]
                (if-let [o (get overs id)]
                  o
                  (if-let [[r o] (future-override ranged id)]
+                   ;; the instance moves as far as the override did, and
+                   ;; starts in the override's frame
                    (let [ofr    (frame cal (prop o :dtstart) opts)
-                         ostart (in-frame ofr (civil/seconds (:value (prop o :dtstart))) fr)]
-                     (instance cal o fr ostart (+ id (- ostart r)) id nil opts))
-                   (instance cal c fr start id id (get periods id) opts))))
+                         olocal (civil/seconds (:value (prop o :dtstart)))
+                         shift  (- (in-frame ofr olocal fr) r)]
+                     (instance cal o ofr olocal (in-frame fr (+ id shift) ofr)
+                               (recurrence-id dtstart fr id) nil opts))
+                   (instance cal c fr start id (recurrence-id dtstart fr id)
+                             (get periods id) opts))))
              ids)))))

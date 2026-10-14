@@ -98,6 +98,12 @@
   [s]
   #?(:clj (Long/parseLong s) :cljs (js/parseInt s 10)))
 
+(defn date-text?
+  "Whether `v` is a date or a date-time in the form of jCal, e.g.
+  2026-10-12 or 2026-10-12T19:00:00Z."
+  [v]
+  (and (string? v) (boolean (re-matches #"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z?)?" v))))
+
 (defn seconds
   "The local time of the date or date-time `s` in the form of jCal, e.g.
   2026-10-12 or 2026-10-12T19:00:00Z, ignoring a Z."
@@ -142,12 +148,12 @@
     (if (= "-" sign) [(- days) (- secs)] [days secs])))
 
 (defn offset-seconds
-  "The seconds of the UTC offset `s` in the form of jCal, e.g. +02:00."
+  "The seconds of the UTC offset `s` in the form of jCal, e.g. +02:00, or
+  nil when `s` isn't one."
   [s]
-  (let [[_ sign hh mm ss] (re-matches #"([+-])(\d{2}):(\d{2})(?::(\d{2}))?" s)
-        n                 (+ (* 3600 (number hh)) (* 60 (number mm))
-                             (if ss (number ss) 0))]
-    (if (= "-" sign) (- n) n)))
+  (when-let [[_ sign hh mm ss] (and (string? s) (re-matches #"([+-])(\d{2}):(\d{2})(?::(\d{2}))?" s))]
+    (let [n (+ (* 3600 (number hh)) (* 60 (number mm)) (if ss (number ss) 0))]
+      (if (= "-" sign) (- n) n))))
 
 (defn offset-text
   "The offset of `n` seconds as a UTC offset in the form of jCal, e.g.

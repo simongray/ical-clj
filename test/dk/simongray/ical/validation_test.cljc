@@ -78,7 +78,13 @@
     (is (= [:byweekno-not-yearly] (rule-errors "FREQ=MONTHLY;BYWEEKNO=3")))
     (is (= [:bysetpos-alone] (rule-errors "FREQ=MONTHLY;BYSETPOS=1")))
     (is (= [:rule-part-out-of-range] (rule-errors "FREQ=MONTHLY;BYMONTHDAY=32")))
-    (is (= [:rule-part-out-of-range] (rule-errors "FREQ=MONTHLY;BYDAY=0MO"))))
+    (is (= [:rule-part-out-of-range] (rule-errors "FREQ=MONTHLY;BYDAY=0MO")))
+    (is (= [:bymonthday-not-allowed] (rule-errors "FREQ=WEEKLY;BYMONTHDAY=3"))))
+  (testing "a DTSTART and a DTEND that didn't parse are only invalid"
+    (is (= [:invalid-value :invalid-value]
+           (apply errors :error (concat ["BEGIN:VEVENT"] event
+                                        ["DTSTART;VALUE=DATE:20261012T100000"
+                                         "DTEND:2026" "RRULE:FREQ=DAILY" "END:VEVENT"])))))
   (testing "a DTSTART that the rule doesn't make"
     (is (= [:unsynchronized-dtstart]
            (remove #{:missing-vtimezone}

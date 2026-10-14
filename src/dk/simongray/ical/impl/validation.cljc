@@ -10,6 +10,7 @@
     calendar
   - keys with the details, e.g. :property"
   (:require [clojure.string :as str]
+            [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.recurrence :as recurrence]
             [dk.simongray.ical.impl.registry :as registry]
             [dk.simongray.ical.impl.rules :as rules]
@@ -96,7 +97,7 @@
   [cal c path]
   (let [start   (first-of c :dtstart)
         [i end] (first (concat (indexed c :dtend) (indexed c :due)))]
-    (when (and start end (string? (:value start)) (string? (:value end)))
+    (when (and start end (civil/date-text? (:value start)) (civil/date-text? (:value end)))
       (cond
         (not= (date? start) (date? end))
         [(error :mismatched-types :error (conj path :properties i) {:property (:name end)})]
@@ -117,7 +118,7 @@
   (when (map? (:value p))
     (let [v      (:value start)
           zoned? (boolean (or (get-in start [:params :tzid]) (and (string? v) (str/ends-with? v "Z"))))]
-      (for [e     (rules/errors (:value p) (when (string? v) v) zoned?)
+      (for [e     (rules/errors (:value p) v zoned?)
             :when (not (and (= :exrule (:name p)) (= :unsynchronized-dtstart (:error e))))]
         (assoc e :path path)))))
 

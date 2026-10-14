@@ -113,7 +113,8 @@
   the first moment of its day. Besides the `opts` of tz/zone, it takes:
 
   - :floating, a zone or a TZID for floating times and dates without a
-    TZID, which otherwise have no instant
+    TZID, which otherwise have no instant. A time whose TZID doesn't
+    resolve counts as floating.
 
       (instant cal (property event :dtstart))
       ;; => #inst \"2026-10-12T17:00:00.000-00:00\""

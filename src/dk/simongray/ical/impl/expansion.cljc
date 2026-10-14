@@ -298,8 +298,10 @@
   of year and month."
   [{:keys [freq interval year month bymonth]} k]
   (case freq
-    "MONTHLY" (let [i (+ (dec month) (* k interval))]
-                [[(+ year (civil/floor-div i 12)) (inc (mod i 12))]])
+    "MONTHLY" (let [i (+ (dec month) (* k interval))
+                    m (inc (mod i 12))]
+                (when (or (nil? bymonth) (some #{m} bymonth))
+                  [[(+ year (civil/floor-div i 12)) m]]))
     "YEARLY"  (let [y (+ year (* k interval))]
                 (for [m (sort (distinct (or bymonth (range 1 13))))] [y m]))
     nil))
@@ -339,6 +341,12 @@
     (cond->> xs
       (:bysetpos rule) (set-positions (:bysetpos rule)))))
 
+(defn generates?
+  "Whether the normalized `rule` generates its start, the local time
+  `start`."
+  [rule start]
+  (boolean (some #(= start %) (period-set rule 0 start))))
+
 (defn- period-start
   "The earliest local time that the `k`th period of the `rule` can hold.
   A YEARLY period with BYWEEKNO can start in the year before."
@@ -367,7 +375,8 @@
 
 ;; A rule's periods come round to the same place in the calendar after
 ;; 400 years times its interval, so a rule that has made nothing in that
-;; long never will
+;; long never will. An interval of more than 10,000 reaches past the year
+;; 9999 first.
 (defn- exhausted?
   "Whether the `k`th period of the `rule` starts past the last time
   iCalendar can write, or so long after the time `latest` that the rule
@@ -375,7 +384,7 @@
   [rule k start latest]
   (let [at (period-start rule k start)]
     (or (> at last-second)
-        (> at (+ latest (* (:interval rule) cycle-seconds))))))
+        (> at (+ latest (* (min (:interval rule) 10000) cycle-seconds))))))
 
 (defn- skip-to-day
   "The first period of the sub-daily `rule` on or after the day `day`."
@@ -383,31 +392,106 @@
   (let [step (* interval (units freq))]
     (long (Math/ceil (/ (- (* 86400 day) start) (double step))))))
 
+(defn- next-above
+  "The least of the numbers `xs` that is greater than `x`, or nil."
+  [xs x]
+  (reduce #(if (and (> %2 x) (or (nil? %1) (< %2 %1))) %2 %1) nil xs))
+
+;; The times of day from the time of the period up to the next hour,
+;; minute or second that BYHOUR, BYMINUTE or BYSECOND allow can't pass,
+;; so the periods that start in them are skipped, as dateutil does
+(defn- skip-to-time
+  "The first period of the sub-daily `rule` after the `k`th that starts at
+  a time of day that its BYHOUR, BYMINUTE and BYSECOND could allow, or at
+  the next day."
+  [{:keys [freq interval byhour byminute bysecond]} start k]
+  (let [step   (* interval (units freq))
+        at     (+ start (* k step))
+        day    (civil/floor-div at 86400)
+        tod    (- at (* 86400 day))
+        hh     (quot tod 3600)
+        mm     (quot (rem tod 3600) 60)
+        ss     (rem tod 60)
+        target (cond
+                 (and byhour (not (some #{hh} byhour)))
+                 (if-let [h (next-above byhour hh)] (* 3600 h) 86400)
+
+                 (and byminute (not= "HOURLY" freq) (not (some #{mm} byminute)))
+                 (if-let [m (next-above byminute mm)]
+                   (+ (* 3600 hh) (* 60 m))
+                   (* 3600 (inc hh)))
+
+                 (and bysecond (= "SECONDLY" freq) (not (some #{ss} bysecond)))
+                 (if-let [s (next-above bysecond ss)]
+                   (+ (* 3600 hh) (* 60 mm) s)
+                   (+ (* 3600 hh) (* 60 (inc mm))))
+
+                 :else
+                 (inc tod))]
+    (max (inc k)
+         (long (Math/ceil (/ (- (+ (* 86400 day) target) start) (double step)))))))
+
+(defn- gcd
+  "The greatest common divisor of `a` and `b`."
+  [a b]
+  (if (zero? b) a (recur b (mod a b))))
+
+;; A sub-daily rule's periods start at the times of day that are
+;; congruent to the time of `start`, modulo the greatest common divisor of
+;; its step and a day, e.g. only the even hours for FREQ=HOURLY;INTERVAL=2
+;; from midnight
+(defn- reachable?
+  "Whether a period of the sub-daily `rule` from the local time `start`
+  can start at a time of day that its BYHOUR, BYMINUTE and BYSECOND
+  allow."
+  [{:keys [freq interval byhour byminute bysecond]} start]
+  (let [limits? (case freq
+                  "HOURLY"   byhour
+                  "MINUTELY" (or byhour byminute)
+                  (or byhour byminute bysecond))]
+    (or (not limits?)
+        (let [g   (gcd (* interval (units freq)) 86400)
+              tod (mod start 86400)
+              ms  (if (= "HOURLY" freq) [(quot (rem tod 3600) 60)] (or byminute (range 60)))
+              ss  (if (= "SECONDLY" freq) (or bysecond (range 60)) [(rem tod 60)])]
+          (boolean (some #(zero? (mod (- % tod) g))
+                         (for [h (or byhour (range 24)), m ms, s ss :when (< s 60)]
+                           (+ (* 3600 h) (* 60 m) s))))))))
+
 (defn- next-period
   "The `k`th period of the `rule` or the first after it with any time on
-  or after `start`, as a pair of its number and its times, or nil when the
-  rule is exhausted. `latest` is the latest time the rule made. A rule
-  shorter than daily skips the days that its BYxxx parts leave out."
-  [rule k start latest]
-  (loop [k k]
-    (when-not (exhausted? rule k start latest)
-      (let [days (when (units (:freq rule)) (period-days rule k start))]
-        (if (and days (not (day-passes? rule (first days))))
-          (recur (max (inc k) (skip-to-day rule start (inc (first days)))))
-          (let [xs (drop-while #(< % start) (period-set rule k start))]
-            (if (seq xs) [k xs] (recur (inc k)))))))))
+  or after `from`, as a pair of its number and those times, or nil when
+  the rule is exhausted. A rule shorter than daily skips the days and the
+  times of day that its BYxxx parts leave out."
+  [rule k start from]
+  (let [sub-daily? (units (:freq rule))]
+    (loop [k k]
+      (when-not (exhausted? rule k start from)
+        (let [days (when sub-daily? (period-days rule k start))]
+          (if (and days (not (day-passes? rule (first days))))
+            (recur (max (inc k) (skip-to-day rule start (inc (first days)))))
+            (let [xs (drop-while #(< % from) (period-set rule k start))]
+              (cond
+                (seq xs)   [k xs]
+                sub-daily? (recur (skip-to-time rule start k))
+                :else      (recur (inc k))))))))))
 
+;; A period can hold a time that the one before it held too, when SKIP
+;; moves a day across a month's end or BYSECOND has 60, and those are left
+;; out
 (defn local-times
   "The local times that the normalized `rule` generates from the local
   time `start`, in order, as a lazy sequence that ends where the rule
-  does, or never. It ignores COUNT and UNTIL, and leaves out `start`
-  unless the rule generates it."
+  does, or never, and at the end of the year 9999 at the latest. It
+  ignores COUNT and UNTIL, and leaves out `start` unless the rule
+  generates it."
   [rule start]
-  (letfn [(step [k latest]
+  (letfn [(step [k from]
             (lazy-seq
-             (when-let [[k xs] (next-period rule k start latest)]
-               (concat xs (step (inc k) (last xs))))))]
-    (step 0 start)))
+             (when-let [[k xs] (next-period rule k start from)]
+               (concat xs (lazy-seq (step (inc k) (inc (last xs))))))))]
+    (when (or (not (units (:freq rule))) (reachable? rule start))
+      (take-while #(<= % last-second) (step 0 start)))))
 
 ;; RFC 5545, section 3.8.5.3: "The "DTSTART" property defines the first
 ;; instance in the recurrence set", and section 3.3.10: "The "DTSTART"
@@ -416,12 +500,24 @@
   "The local times of the recurrence `rule`, as the values namespace
   parses it, from the local time `start`. They're `start` itself, even
   when the rule doesn't generate it, and then the times the rule
-  generates until `past?` is true of one, at most COUNT in all. A `date?`
-  start is a date."
+  generates until `past?` is true of one, at most COUNT in all (and at
+  least `start`). A `date?` start is a date."
+  [rule start date? past?]
+  (let [more (lazy-seq
+              (let [xs (cond->> (local-times (normalize rule start date?) start)
+                         past? (take-while (complement past?)))]
+                (if (= start (first xs)) (rest xs) xs)))]
+    (cond->> (cons start more)
+      (:count rule) (take (max 1 (:count rule))))))
+
+;; RFC 2445, section 4.8.5.2: an EXRULE excludes the times it generates,
+;; which needn't include DTSTART
+(defn exclusion-times
+  "The local times that the recurrence `rule` generates from the local
+  time `start`, as an EXRULE: without `start` unless the rule generates
+  it, until `past?` is true of one, and at most COUNT."
   [rule start date? past?]
   (lazy-seq
-   (let [xs (cond->> (local-times (normalize rule start date?) start)
-              past? (take-while (complement past?)))
-         xs (if (= start (first xs)) xs (cons start xs))]
-     (cond->> xs
-       (:count rule) (take (:count rule))))))
+   (cond->> (local-times (normalize rule start date?) start)
+     past?         (take-while (complement past?))
+     (:count rule) (take (:count rule)))))

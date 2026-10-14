@@ -189,3 +189,80 @@
            (mapv (juxt #(ical/value % :uid) #(ical/value % :dtstart))
                  (:components (ical/expand cal #inst "2026-10-07T00:00:00Z"
                                            #inst "2026-10-10T00:00:00Z")))))))
+
+(deftest edge-cases
+  (testing "an unknown TZID counts as floating, so expand ends"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART;TZID=Nowhere/Special:20261005T100000"
+                        "DURATION:PT1H" "RRULE:FREQ=WEEKLY" "END:VEVENT")]
+      (is (= ["2026-10-05T10:00:00" "2026-10-12T10:00:00"]
+             (mapv #(ical/value % :dtstart)
+                   (:components (ical/expand cal #inst "2026-10-01T00:00:00Z"
+                                             #inst "2026-10-15T00:00:00Z")))))))
+  (testing "values that don't parse are left out, not computed with"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20240101T000000Z"
+                        "DURATION:P999999999999999999W" "END:VEVENT")]
+      (is (= {:name :dtend :value "2024-01-01T00:00:00Z"}
+             (ical/end cal (first (ical/components cal :vevent)))))))
+  (testing "a RANGE=THISANDFUTURE override in another zone moves the later instances"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART;TZID=Europe/Copenhagen:20260105T100000"
+                        "RRULE:FREQ=WEEKLY;COUNT=3" "END:VEVENT"
+                        "BEGIN:VEVENT" "UID:a"
+                        "RECURRENCE-ID;TZID=Europe/Copenhagen;RANGE=THISANDFUTURE:20260112T100000"
+                        "DTSTART;TZID=America/New_York:20260112T050000" "END:VEVENT")
+          moved (last (ical/occurrences cal (first (ical/components cal :vevent))))]
+      (is (= [{:name :dtstart :params {:tzid "America/New_York"} :value "2026-01-19T05:00:00"}
+              {:name :recurrence-id :params {:tzid "Europe/Copenhagen"} :value "2026-01-19T10:00:00"}]
+             [(ical/property moved :dtstart) (ical/property moved :recurrence-id)]))))
+  (testing "an EXRULE removes only what it generates, and counts only that"
+    (is (= ["2026-01-01T10:00:00" "2026-01-02T10:00:00" "2026-01-04T10:00:00"
+            "2026-01-05T10:00:00" "2026-01-06T10:00:00" "2026-01-07T10:00:00"]
+           (starts (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20260101T100000"
+                             "RRULE:FREQ=DAILY;COUNT=12" "EXRULE:FREQ=WEEKLY;BYDAY=SA;COUNT=2"
+                             "END:VEVENT")
+                   6))))
+  (testing "an EXDATE removes an instance that the clocks skip"
+    (is (= ["2026-03-27T02:30:00" "2026-03-28T02:30:00" "2026-03-30T02:30:00"]
+           (starts (calendar "BEGIN:VEVENT" "UID:a"
+                             "DTSTART;TZID=Europe/Copenhagen:20260327T023000"
+                             "RRULE:FREQ=DAILY;COUNT=4"
+                             "EXDATE;TZID=Europe/Copenhagen:20260329T023000" "END:VEVENT")))))
+  (testing "a date as EXDATE removes its day, whatever the zone of floating times"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART;TZID=America/New_York:20260101T100000"
+                        "RRULE:FREQ=DAILY;COUNT=4" "EXDATE;VALUE=DATE:20260103" "END:VEVENT")]
+      (is (= ["2026-01-01T10:00:00" "2026-01-02T10:00:00" "2026-01-04T10:00:00"]
+             (mapv #(ical/value % :dtstart)
+                   (ical/occurrences cal (first (ical/components cal :vevent))
+                                     {:floating "Europe/Copenhagen"}))))))
+  (testing "the same instance from two RDATEs comes once"
+    (is (= ["2026-01-05T10:00:00Z" "2026-01-10T10:00:00Z"]
+           (starts (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20260105T100000Z"
+                             "RDATE:20260110T100000Z,20260110T100000Z"
+                             "RDATE;TZID=Europe/Copenhagen:20260110T110000" "END:VEVENT")))))
+  (testing "expand puts floating times in the zone :floating"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20260101T220000"
+                        "DTEND:20260101T230000" "RRULE:FREQ=DAILY;COUNT=3" "END:VEVENT")]
+      (is (= ["2026-01-01T22:00:00"]
+             (mapv #(ical/value % :dtstart)
+                   (:components (ical/expand cal #inst "2026-01-02T02:00:00Z"
+                                             #inst "2026-01-02T05:00:00Z"
+                                             {:floating "America/New_York"})))))))
+  (testing "a recurring component with a RECURRENCE-ID of its own expands"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "RECURRENCE-ID:20260105T100000"
+                        "DTSTART:20260105T100000" "RRULE:FREQ=DAILY;COUNT=2" "END:VEVENT")]
+      (is (= 2 (count (:components (ical/expand cal #inst "2026-01-01T00:00:00Z"
+                                                #inst "2026-02-01T00:00:00Z")))))))
+  (testing "a SEQUENCE that isn't a number counts as 0"
+    (is (= ["2026-01-05T10:00:00" "2026-01-06T13:00:00"]
+           (starts (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20260105T100000"
+                             "RRULE:FREQ=DAILY;COUNT=2" "END:VEVENT"
+                             "BEGIN:VEVENT" "UID:a" "RECURRENCE-ID:20260106T100000"
+                             "SEQUENCE:2" "DTSTART:20260106T130000" "END:VEVENT"
+                             "BEGIN:VEVENT" "UID:a" "RECURRENCE-ID:20260106T100000"
+                             "SEQUENCE:x" "DTSTART:20260106T120000" "END:VEVENT")))))
+  (testing "all-day instances keep their days across a clock change"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART;VALUE=DATE:20260328"
+                        "DTEND;VALUE=DATE:20260330" "RRULE:FREQ=WEEKLY;COUNT=2" "END:VEVENT")]
+      (is (= ["2026-03-30" "2026-04-06"]
+             (mapv #(ical/value % :dtend)
+                   (ical/occurrences cal (first (ical/components cal :vevent))
+                                     {:floating "Europe/Copenhagen"})))))))
