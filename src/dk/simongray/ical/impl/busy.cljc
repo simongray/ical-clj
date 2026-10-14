@@ -5,8 +5,8 @@
   instants, coalesced by their type.
 
   Periods are pairs of instants in seconds from the epoch."
-  (:require [clojure.string :as str]
-            [dk.simongray.ical.impl.civil :as civil]
+  (:require [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.impl.recurrence :as recurrence]))
 
 (defn- value
@@ -19,8 +19,8 @@
 (defn- fbtype
   "The type of busy time of the event `c`, or nil when it's free."
   [c]
-  (let [status (some-> (value c :status) str str/upper-case)
-        transp (some-> (value c :transp) str str/upper-case)]
+  (let [status (some-> (value c :status) str locale/upper-case)
+        transp (some-> (value c :transp) str locale/upper-case)]
     (cond
       (= "TRANSPARENT" transp) nil
       (= "CANCELLED" status)   nil
@@ -62,7 +62,7 @@
         :when (= :vfreebusy (:name c))
         p     (:properties c)
         :when (and (= :freebusy (:name p)) (not= :unknown (:type p)))
-        :let  [type (str/upper-case (str (get-in p [:params :fbtype] "BUSY")))]
+        :let  [type (locale/upper-case (str (get-in p [:params :fbtype] "BUSY")))]
         :when (not= "FREE" type)
         v     (:value p)
         :let  [s (civil/seconds (:start v))
@@ -94,7 +94,7 @@
   the busy types of equal priorities ordered so that BUSY wins."
   [c]
   (let [p (value c :priority)
-        t (str/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
+        t (locale/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
     [(if (and (number? p) (pos? p)) (- 10 p) 0)
      (get {"BUSY-TENTATIVE" 0 "BUSY-UNAVAILABLE" 1 "BUSY" 2} t 1)]))
 
@@ -131,7 +131,7 @@
                          e    (or (when (or (prop c :dtend) (prop c :duration))
                                     (some-> (recurrence/end cal c opts) (#(recurrence/instant-of cal % utc))))
                                   to)
-                         type (str/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
+                         type (locale/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
                      (if-let [[s e] (clip s e from to)]
                        (reduce (fn [segments [a b]]
                                  (if-let [[a b] (clip a b s e)]

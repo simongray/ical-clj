@@ -11,7 +11,9 @@
 
   Each reader returns ::invalid for text that isn't of its type."
   (:require [clojure.string :as str]
-            [dk.simongray.ical.impl.civil :as civil]))
+            [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.impl.lines :as lines]
+            [dk.simongray.ical.impl.locale :as locale]))
 
 (defn- digits
   "The number in the string of digits `s`."
@@ -40,7 +42,7 @@
   [s]
   (if-let [[_ hh mm ss z] (re-matches #"(\d{2})(\d{2})(\d{2})([Zz]?)" s)]
     (if (civil/valid-time? (digits hh) (digits mm) (digits ss))
-      (str hh ":" mm ":" ss (str/upper-case z))
+      (str hh ":" mm ":" ss (locale/upper-case z))
       ::invalid)
     ::invalid))
 
@@ -94,7 +96,7 @@
 (defn read-duration
   "The duration in the text `s`, e.g. PT2H, in upper case."
   [s]
-  (let [s (str/upper-case s)]
+  (let [s (locale/upper-case s)]
     (if (and (re-matches duration-pattern s) (not (re-matches #"[+-]?P" s)))
       s
       ::invalid)))
@@ -129,36 +131,40 @@
   other than those that RFC 5545 escapes is dropped."
   [s]
   (if (str/includes? s "\\")
-    (str/replace s #"\\(.)" (fn [[_ c]]
-                             (case c
-                               ("n" "N") "\n"
-                               c)))
+    ;; [\s\S] rather than ., which on the JVM misses U+0085 and others
+    (str/replace s #"\\([\s\S])" (fn [[_ c]]
+                                  (case c
+                                    ("n" "N") "\n"
+                                    c)))
     s))
 
 (defn write-text
   "The text `s`, escaped."
   [s]
-  (str/replace s #"\\|;|,|\r\n|\n|\r" (fn [m]
-                                      (case m
-                                        "\\" "\\\\"
-                                        ";"  "\\;"
-                                        ","  "\\,"
-                                        "\\n"))))
+  (str/replace (str s) #"\\|;|,|\r\n|\n|\r" (fn [m]
+                                              (case m
+                                                "\\" "\\\\"
+                                                ";"  "\\;"
+                                                ","  "\\,"
+                                                "\\n"))))
 
-;; RFC 5545, section 3.3.8
+;; RFC 5545, section 3.3.8: an integer is from -2147483648 to 2147483647,
+;; but larger ones of up to 15 digits are read too, which JavaScript's
+;; numbers hold exactly
 (defn read-integer
   "The integer in the text `s`."
   [s]
-  (if (re-matches #"[+-]?\d{1,18}" s)
+  (if (re-matches #"[+-]?\d{1,15}" s)
     (digits (str/replace s "+" ""))
     ::invalid))
 
 ;; RFC 5545, section 3.3.7
 (defn read-float
-  "The float in the text `s`."
+  "The float in the text `s`, unless it's too large for a double."
   [s]
   (if (re-matches #"[+-]?\d+(?:\.\d+)?" s)
-    #?(:clj (Double/parseDouble s) :cljs (js/parseFloat s))
+    (let [x #?(:clj (Double/parseDouble s) :cljs (js/parseFloat s))]
+      (if #?(:clj (Double/isInfinite x) :cljs (not (js/isFinite x))) ::invalid x))
     ::invalid))
 
 (defn- expand-exponent
@@ -177,17 +183,20 @@
 
 (defn write-float
   "The text of the float `x`, the same on every platform: with no
-  exponent, and without a fraction when it's whole."
+  exponent, no zeros at the end of its fraction, and no fraction when it's
+  whole. Negative zero is 0."
   [x]
-  (let [s (str (double x))
+  (let [x (double x)
+        s (str (if (zero? x) 0.0 x))
         s (if (re-find #"[eE]" s) (expand-exponent s) s)]
-    (str/replace s #"\.0$" "")))
+    (cond-> s
+      (str/includes? s ".") (-> (str/replace #"0+$" "") (str/replace #"\.$" "")))))
 
 ;; RFC 5545, section 3.3.2
 (defn read-boolean
   "The boolean in the text `s`."
   [s]
-  (case (str/upper-case s)
+  (case (locale/upper-case s)
     "TRUE"  true
     "FALSE" false
     ::invalid))
@@ -205,6 +214,14 @@
 (def ^:private weekday-pattern
   "A weekday of BYDAY, perhaps after a signed ordinal."
   #"([+-]?\d{1,2})?(SU|MO|TU|WE|TH|FR|SA)")
+
+;; the ordinal as a number, so that +1MO and 01MO read as 1MO
+(defn read-weekday
+  "The weekday of BYDAY in the text `s`, e.g. +01mo, in upper case with its
+  ordinal as a number, e.g. 1MO, or nil."
+  [s]
+  (when-let [[_ n d] (re-matches weekday-pattern (locale/upper-case (str/trim (str s))))]
+    (str (some-> n (str/replace "+" "") digits) d)))
 
 (defn- split-trimmed
   "The comma-separated values of `s`, without the spaces around them that
@@ -226,21 +243,17 @@
   "The value of the rule part `k` in the text `s`, or ::invalid."
   [k s]
   (case k
-    :freq     (let [f (str/upper-case s)] (if (freqs f) f ::invalid))
+    :freq     (let [f (locale/upper-case s)] (if (freqs f) f ::invalid))
     :until    (let [dt (read-date-time s)]
                 (if (= ::invalid dt) (read-date s) dt))
     (:count :interval)
     (if (re-matches #"\d{1,9}" s) (digits s) ::invalid)
-    ;; the ordinal as a number, so that +1MO and 01MO read as 1MO
-    :byday    (let [days (mapv #(re-matches weekday-pattern %)
-                               (split-trimmed (str/upper-case s)))]
-                (if (every? some? days)
-                  (mapv (fn [[_ n d]] (str (some-> n (str/replace "+" "") digits) d)) days)
-                  ::invalid))
-    :wkst     (let [d (str/upper-case s)]
+    :byday    (let [days (mapv read-weekday (split-trimmed s))]
+                (if (every? some? days) days ::invalid))
+    :wkst     (let [d (locale/upper-case s)]
                 (if (re-matches #"SU|MO|TU|WE|TH|FR|SA" d) d ::invalid))
     (:rscale :skip)
-    (str/upper-case s)
+    (locale/upper-case s)
     (:bysecond :byminute :byhour :bymonthday :byyearday :byweekno :bysetpos)
     (read-numbers s false)
     :bymonth  (read-numbers s true)
@@ -254,7 +267,7 @@
   [s]
   (let [rule (reduce (fn [rule part]
                        (let [[k v] (str/split part #"=" 2)
-                             k     (keyword (str/lower-case (str/trim k)))
+                             k     (keyword (locale/lower-case (str/trim k)))
                              v     (when v (read-rule-part k v))]
                          (if (or (nil? v) (= ::invalid v) (contains? rule k))
                            (reduced ::invalid)
@@ -279,7 +292,7 @@
     (->> (concat (keep #(when (contains? rule %) [% (get rule %)]) rule-parts)
                  (remove (comp known key) rule))
          (map (fn [[k v]]
-                (str (str/upper-case (name k)) "=" (write-rule-part k v))))
+                (str (locale/upper-case (lines/keyword-text k)) "=" (write-rule-part k v))))
          (str/join ";"))))
 
 (defn read-value

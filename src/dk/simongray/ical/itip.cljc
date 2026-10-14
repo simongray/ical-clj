@@ -10,6 +10,7 @@
   (:refer-clojure :exclude [apply])
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.impl.recurrence :as recurrence]
             [dk.simongray.ical.impl.restrictions :as restrictions]
             [dk.simongray.ical.tz :as tz]))
@@ -114,7 +115,7 @@
   "The calendar user address `s` (RFC 5545, section 3.3.3) without mailto:
   and in lower case, so that two addresses compare."
   [s]
-  (str/lower-case (str/replace-first (str/trim (str s)) #"(?i)^mailto:" "")))
+  (locale/lower-case (str/replace-first (str/trim (str s)) #"(?i)^mailto:" "")))
 
 (defn- attendee?
   "Whether the property `p` is an ATTENDEE with the address `a`."
@@ -403,7 +404,7 @@
 
   Any other method leaves `cal` unchanged."
   [cal msg]
-  (let [method (str/upper-case (str (value msg :method)))
+  (let [method (locale/upper-case (str (value msg :method)))
         ms     (filter #(scheduled (:name %)) (:components msg))]
     (case method
       "REPLY"                       (reduce apply-reply cal ms)
@@ -433,7 +434,7 @@
   :path [:components 1] :property :attendee}. They come on top of the
   message's errors as a calendar, which ical/validation-errors gives."
   [msg]
-  (let [method (some-> (value msg :method) str str/upper-case)
+  (let [method (some-> (value msg :method) str locale/upper-case)
         k      (kind msg)
         t      (table msg method)
         err    #(merge {:error %1 :level :error :path []} %2)]
@@ -566,7 +567,7 @@
       (content-type msg)
       ;; => \"text/calendar; method=REQUEST; charset=UTF-8\""
   [msg]
-  (str "text/calendar; method=" (str/upper-case (str (value msg :method))) "; charset=UTF-8"))
+  (str "text/calendar; method=" (locale/upper-case (str (value msg :method))) "; charset=UTF-8"))
 
 ;; RFC 6047, section 2.2.1 and RFC 5546, section 1.3: an attendee sends
 ;; a REPLY, a REFRESH or a COUNTER, and the organizer the others
@@ -576,6 +577,6 @@
   other method."
   [msg]
   (let [c (some #(when (scheduled (:name %)) %) (:components msg))]
-    (if (#{"REPLY" "REFRESH" "COUNTER"} (str/upper-case (str (value msg :method))))
+    (if (#{"REPLY" "REFRESH" "COUNTER"} (locale/upper-case (str (value msg :method))))
       (value c :attendee)
       (value c :organizer))))

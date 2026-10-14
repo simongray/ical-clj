@@ -11,6 +11,7 @@
   - keys with the details, e.g. :property"
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.impl.recurrence :as recurrence]
             [dk.simongray.ical.impl.registry :as registry]
             [dk.simongray.ical.impl.rules :as rules]
@@ -71,7 +72,7 @@
   "The errors in the properties of the VALARM `c` at `path` for its
   action."
   [c path]
-  (let [action (some-> (first-of c :action) :value str str/upper-case)
+  (let [action (some-> (first-of c :action) :value str locale/upper-case)
         has?   #(boolean (first-of c %))]
     (concat
      (when (not= (has? :duration) (has? :repeat))

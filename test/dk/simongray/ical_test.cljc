@@ -162,3 +162,45 @@
                      75)
                 (str/split-lines text)))
     (is (= summary (ical/value (ical/parse text) :summary)))))
+
+(deftest edge-cases
+  (testing "a line break in a value that isn't text starts no property"
+    (is (= (crlf "BEGIN:VEVENT" "URL:https://x.example/ATTACH:https://evil.example/" "END:VEVENT")
+           (ical/serialize {:name       :vevent
+                            :properties [{:name  :url
+                                          :value "https://x.example/\r\nATTACH:https://evil.example/"}]}))))
+  (testing "components nest 64 deep at most, and unmatched ENDs are quick"
+    (is (= 64 (count (take-while some? (iterate #(first (:components %))
+                                                (ical/parse (apply str (repeat 1000 "BEGIN:X-A\r\n"))))))))
+    (is (= 1 (count (ical/parse-all (str (apply str (repeat 5000 "BEGIN:X-A\r\n"))
+                                         (apply str (repeat 5000 "END:X-B\r\n"))))))))
+  (testing "CRs before a LF make one line break, in text and in bytes"
+    (let [s "BEGIN:VEVENT\r\r\nSUMMARY:the budget for next\r\r\n  year\r\r\nEND:VEVENT\r\r\n"]
+      (is (= "the budget for next year" (ical/value (ical/parse s) :summary)))
+      (is (= "the budget for next year" (ical/value (ical/parse (utf-8 s)) :summary)))))
+  (testing "a byte order mark at the start of an appended calendar"
+    (let [one (crlf "BEGIN:VCALENDAR" "VERSION:2.0" "END:VCALENDAR")]
+      (is (= [:vcalendar :vcalendar] (mapv :name (ical/parse-all (str "﻿" one "﻿" one)))))))
+  (testing "what follows a quoted parameter value belongs to it"
+    (is (= {:cn "Simon " :partstat "ACCEPTED"}
+           (:params (ical/property (ical/parse (crlf "BEGIN:VEVENT"
+                                                     "ATTENDEE;CN=\"Simon\" ;PARTSTAT=ACCEPTED:mailto:s@x"
+                                                     "END:VEVENT"))
+                                   :attendee)))))
+  (testing "more than eight parameters keep their order"
+    (let [s (crlf "BEGIN:VEVENT"
+                  "X-A;P1=1;P2=2;P3=3;P4=4;P5=5;P6=6;P7=7;P8=8;P9=9;P10=10:v"
+                  "END:VEVENT")]
+      (is (= s (ical/serialize (ical/parse s))))))
+  (testing "numbers that don't fit a double, or JavaScript's numbers exactly, keep their text"
+    (is (= :unknown (:type (ical/property (ical/parse (crlf "BEGIN:VEVENT"
+                                                            (str "GEO:1" (apply str (repeat 400 "0")) ";1.5")
+                                                            "END:VEVENT"))
+                                          :geo))))
+    (is (= "9999999999999999" (ical/value (ical/parse (crlf "BEGIN:VEVENT"
+                                                            "X-A;VALUE=INTEGER:9999999999999999"
+                                                            "END:VEVENT"))
+                                          :x-a))))
+  (testing "floats are written the same on every platform"
+    (is (= (crlf "BEGIN:VEVENT" "GEO:0.00000001;0" "END:VEVENT")
+           (ical/serialize {:name :vevent :properties [{:name :geo :value [1.0E-8 -0.0]}]})))))

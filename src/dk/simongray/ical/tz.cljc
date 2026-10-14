@@ -11,6 +11,7 @@
   \"2026-10-12T19:00:00\", and instants are insts."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
+            [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.impl.windows :as windows]
             [dk.simongray.ical.impl.zones :as zones]))
 
@@ -76,7 +77,7 @@
    (when (string? tzid)
      (let [platform #(or (platform-zone tzid tzid)
                          (some (partial platform-zone tzid) (suffixes tzid))
-                         (some->> (get windows/zones (str/lower-case tzid))
+                         (some->> (get windows/zones (locale/lower-case tzid))
                                   (platform-zone tzid))
                          (fixed-zone tzid))]
        (if vtimezone?

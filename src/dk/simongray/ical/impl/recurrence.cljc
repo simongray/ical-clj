@@ -10,6 +10,7 @@
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.expansion :as expansion]
+            [dk.simongray.ical.impl.locale :as locale]
             [dk.simongray.ical.impl.zones :as zones]
             [dk.simongray.ical.rrule :as rrule]
             [dk.simongray.ical.tz :as tz]))
@@ -470,7 +471,7 @@
             ranged  (into (sorted-map)
                           (filter #(and (= "THISANDFUTURE"
                                            (some-> (prop (val %) :recurrence-id) :params :range
-                                                   str str/upper-case))
+                                                   str locale/upper-case))
                                         (frame cal (prop (val %) :dtstart) opts))
                                   overs))
             after   (when-let [t (::after opts)]

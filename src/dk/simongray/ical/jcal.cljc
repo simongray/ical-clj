@@ -5,20 +5,31 @@
 
   A calendar's values already take jCal's forms, so only the shape of its
   components, properties and parameters changes."
-  (:require [clojure.string :as str]
-            [dk.simongray.ical.impl.lines :as lines]
-            [dk.simongray.ical.impl.registry :as registry]))
+  (:require [dk.simongray.ical.impl.lines :as lines]
+            [dk.simongray.ical.impl.locale :as locale]
+            [dk.simongray.ical.impl.registry :as registry]
+            [dk.simongray.ical.impl.values :as values]))
+
+(defn- key-text
+  "The text of the key `k` of a JSON object, a keyword or a string."
+  [k]
+  (if (keyword? k) (lines/keyword-text k) (str k)))
+
+(defn- ordered
+  "The `pairs` of key and value as a map in their order."
+  [pairs]
+  (apply array-map (mapcat identity pairs)))
 
 (defn- property->jcal
   "The jCal array of the property `p` (RFC 7265, section 3.4)."
   [{k :name :keys [params value] :as p}]
   (let [entry  (registry/property k)
         type   (or (:type p) (:type entry))
-        params (into {} (for [[pk pv] params] [(lines/keyword-text pk) pv]))
+        params (ordered (for [[pk pv] params] [(key-text pk) pv]))
         jvalue (fn [v]
                  (cond
                    (and (= :period type) (map? v)) [(:start v) (or (:end v) (:duration v))]
-                   (and (= :recur type) (map? v))  (into {} (for [[rk rv] v] [(name rk) rv]))
+                   (and (= :recur type) (map? v))  (into {} (for [[rk rv] v] [(key-text rk) rv]))
                    :else                           v))]
     (into [(lines/keyword-text k) params (name type)]
           (if (and (:list? entry) (not= :unknown type) (sequential? value))
@@ -38,41 +49,51 @@
   #{:bysecond :byminute :byhour :bymonthday :byyearday :byweekno :bymonth :bysetpos})
 
 ;; RFC 7265, section 3.6.10: a BYxxx part can be a single value or an
-;; array, and FREQ and WKST keep their case
+;; array, and FREQ and WKST keep their case. BYDAY reads as the parser
+;; reads it.
 (defn- jcal->rule
   "The recurrence rule of the jCal object `m`."
   [m]
   (into {} (for [[k v] m
-                 :let  [k (keyword (str/lower-case (name k)))]]
+                 :let  [k (keyword (locale/lower-case (key-text k)))]]
              [k (cond
-                  (#{:freq :wkst :rscale :skip} k)    (str/upper-case v)
-                  (= :byday k)                        (mapv str/upper-case (if (sequential? v) v [v]))
-                  (by-parts k)                        (if (sequential? v) (vec v) [v])
-                  :else                               v)])))
+                  (#{:freq :wkst :rscale :skip} k) (locale/upper-case v)
+                  (= :byday k)                     (mapv #(or (values/read-weekday %) (locale/upper-case %))
+                                                         (if (sequential? v) v [v]))
+                  (by-parts k)                     (if (sequential? v) (vec v) [v])
+                  :else                            v)])))
+
+;; RFC 7265, sections 3.6.7 and 3.6.8: JSON writes a whole float without
+;; its fraction, e.g. 37 for 37.0
+(defn- jcal->number
+  "The number `v` of the jCal type `type`, a double for :float."
+  [type v]
+  (if (and (= :float type) (number? v)) (double v) v))
 
 (defn- jcal->value
   "The value `v` of the jCal type `type`."
   [type v]
   (cond
-    (and (= :period type) (sequential? v))
+    (and (= :period type) (sequential? v) (= 2 (count v)) (every? string? v))
     (let [[start end] v]
       (if (re-find #"^[+-]?P" end) {:start start :duration end} {:start start :end end}))
 
     (and (= :recur type) (map? v)) (jcal->rule v)
-    :else                          v))
+    (sequential? v)                (mapv #(jcal->number type %) v)
+    :else                          (jcal->number type v)))
 
 (defn- jcal->property
   "The property of the jCal array `a`."
   [[k params type & values :as a]]
-  (let [k      (keyword (str/lower-case k))
+  (let [k      (keyword (locale/lower-case k))
         entry  (registry/property k)
-        type   (keyword (str/lower-case type))
+        type   (keyword (locale/lower-case type))
         vs     (mapv #(jcal->value type %) values)
         value  (if (and (not= :unknown type) (or (:list? entry) (< 1 (count vs))))
                  vs
                  (first vs))
-        params (into {} (for [[pk pv] params]
-                          [(keyword (str/lower-case (name pk))) (if (sequential? pv) (vec pv) pv)]))]
+        params (ordered (for [[pk pv] params]
+                          [(keyword (locale/lower-case (key-text pk))) (if (sequential? pv) (vec pv) pv)]))]
     (cond-> {:name k}
       (seq params)                          (assoc :params params)
       (not= type (:type entry))             (assoc :type type)
@@ -81,6 +102,6 @@
 (defn jcal->calendar
   "The component of the jCal array `a`, the inverse of calendar->jcal."
   [[k properties components :as a]]
-  (cond-> {:name (keyword (str/lower-case k))}
+  (cond-> {:name (keyword (locale/lower-case k))}
     (seq properties) (assoc :properties (mapv jcal->property properties))
     (seq components) (assoc :components (mapv jcal->calendar components))))

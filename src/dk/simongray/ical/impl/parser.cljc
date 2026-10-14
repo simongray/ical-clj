@@ -129,19 +129,27 @@
                      (range (dec (count stack)) -1 -1))]
     (nth (iterate close-top [stack done]) (- (count stack) i))))
 
+;; Calendars nest four deep at most, and the functions that walk a
+;; component recurse into the ones inside it
+(def ^:private max-depth
+  "The deepest that components nest in what the parser reads."
+  64)
+
 ;; RFC 5545, section 3.4: icalstream = 1*icalobject, and each component is
-;; between a BEGIN and an END
+;; between a BEGIN and an END. The number of open components of each name
+;; tells at once whether an END closes one.
 (defn read-stream
   "The components at the top of the text `s`, as a map of:
 
   - :components, in order
   - :dropped, the numbered lines that were left out: those that aren't
-    content lines, an END without its BEGIN, and properties outside any
-    component
+    content lines, an END without its BEGIN, a BEGIN nested deeper than
+    64 components, and properties outside any component
   - :unclosed, the names of the components that the text didn't end"
   [s]
   (loop [[[_ text :as line] & more] (lines/lines s)
          stack   []
+         open    {}
          done    []
          dropped []]
     (if (nil? line)
@@ -151,22 +159,24 @@
       (let [{k :name v :text :as parsed} (lines/read-line text)]
         (cond
           (nil? parsed)
-          (recur more stack done (conj dropped line))
+          (recur more stack open done (conj dropped line))
 
-          (and (= :begin k) (not (str/blank? v)))
-          (recur more (conj stack {:name (lines/->keyword v) :properties [] :components []})
-                 done dropped)
+          (and (= :begin k) (not (str/blank? v)) (< (count stack) max-depth))
+          (let [c (lines/->keyword v)]
+            (recur more (conj stack {:name c :properties [] :components []})
+                   (update open c (fnil inc 0)) done dropped))
 
-          (= :end k)
-          (if-let [[stack done] (close stack done (lines/->keyword v))]
-            (recur more stack done dropped)
-            (recur more stack done (conj dropped line)))
+          (and (= :end k) (pos? (get open (lines/->keyword v) 0)))
+          (let [[stack' done] (close stack done (lines/->keyword v))]
+            (recur more stack'
+                   (reduce #(update %1 (:name %2) dec) open (subvec stack (count stack')))
+                   done dropped))
 
-          (empty? stack)
-          (recur more stack done (conj dropped line))
+          (or (#{:begin :end} k) (empty? stack))
+          (recur more stack open done (conj dropped line))
 
           :else
           (recur more
                  (update-in stack [(dec (count stack)) :properties] conj
                             (read-property parsed))
-                 done dropped))))))
+                 open done dropped))))))

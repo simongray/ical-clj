@@ -15,7 +15,8 @@
   the offset of an IANA zone at an instant."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
-            [dk.simongray.ical.impl.expansion :as expansion])
+            [dk.simongray.ical.impl.expansion :as expansion]
+            [dk.simongray.ical.impl.locale :as locale])
   #?(:clj (:import [java.time Instant ZoneId])))
 
 #?(:clj
@@ -24,38 +25,58 @@
      SystemV zones that only Java has."
      (delay (into {}
                   (comp (remove #(str/starts-with? % "SystemV/"))
-                        (map (juxt str/lower-case identity)))
+                        (map (juxt locale/lower-case identity)))
                   (ZoneId/getAvailableZoneIds)))))
 
 #?(:cljs
+   (defn- new-formatter
+     "An Intl.DateTimeFormat that gives the local time in the zone named
+     `tzid`, or nil when the platform doesn't know the zone."
+     [tzid]
+     (try
+       (js/Intl.DateTimeFormat.
+        "en-US"
+        #js {:timeZone tzid :hourCycle "h23" :era "short"
+             :year "numeric" :month "numeric" :day "numeric"
+             :hour "numeric" :minute "numeric" :second "numeric"})
+       (catch :default _ nil))))
+
+#?(:cljs
    (def ^:private formatters
-     "The Intl.DateTimeFormat of each zone that has been asked for, since
-     making one is slow."
+     "The Intl.DateTimeFormat of each zone by the platform's name for it,
+     since making one is slow."
      (atom {})))
 
 #?(:cljs
    (defn- formatter
-     "The Intl.DateTimeFormat that gives the local time in the zone named
-     `iana`, or nil when the platform doesn't know the zone."
+     "The Intl.DateTimeFormat of the zone that the platform names `iana`."
      [iana]
      (or (get @formatters iana)
-         (when-let [f (try
-                        (js/Intl.DateTimeFormat.
-                         "en-US"
-                         #js {:timeZone iana :hourCycle "h23" :era "short"
-                              :year "numeric" :month "numeric" :day "numeric"
-                              :hour "numeric" :minute "numeric" :second "numeric"})
-                        (catch :default _ nil))]
+         (let [f (new-formatter iana)]
            (swap! formatters assoc iana f)
            f))))
+
+;; Each spelling of a TZID is looked up once, those that the platform
+;; doesn't know included, and the formatters are kept by the platform's
+;; own names, of which there are a few hundred
+#?(:cljs
+   (def ^:private names
+     "The platform's name of each zone by a TZID in lower case that has been
+     asked for, or nil, which is emptied when it holds too many."
+     (atom {})))
 
 (defn platform-name
   "The name by which the platform knows the zone `tzid`, ignoring case, or
   nil."
   [tzid]
-  #?(:clj  (get @zone-ids (str/lower-case tzid))
-     :cljs (when (and (re-matches #"[A-Za-z][A-Za-z0-9_+/-]*" tzid) (formatter tzid))
-             tzid)))
+  #?(:clj  (get @zone-ids (locale/lower-case tzid))
+     :cljs (when (re-matches #"[A-Za-z][A-Za-z0-9_+/-]*" tzid)
+             (let [k (locale/lower-case tzid)]
+               (if (contains? @names k)
+                 (get @names k)
+                 (let [iana (some-> (new-formatter tzid) .resolvedOptions .-timeZone)]
+                   (swap! names #(assoc (if (< (count %) 4096) % {}) k iana))
+                   iana))))))
 
 #?(:cljs
    (defn- local-fields
@@ -67,6 +88,8 @@
                  (case (.-type part)
                    "era"     (assoc m :bc? (str/starts-with? v "B"))
                    "literal" m
+                   ;; an engine that ignores hourCycle gives midnight as 24
+                   "hour"    (assoc m :hour (mod (js/parseInt v 10) 24))
                    (assoc m (keyword (.-type part)) (js/parseInt v 10)))))
              {}
              (.formatToParts f (js/Date. (* 1000 t))))))
