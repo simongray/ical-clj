@@ -181,6 +181,7 @@
     of the busy periods of the calendar's VFREEBUSYs
   - BUSY-TENTATIVE, of the TENTATIVE events
 
+  A floating time counts as UTC unless :floating in `opts` gives a zone.
   It takes the same `opts` as instant, and :now and :uid, the inst of its
   DTSTAMP (now by default) and its UID (a random one by default)."
   ([cal from to]
