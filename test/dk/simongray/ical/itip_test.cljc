@@ -95,6 +95,55 @@
   (testing "a cancellation"
     (is (= "CANCELLED" (ical/value (event (itip/apply calendar (itip/cancel calendar))) :status)))))
 
+(deftest restriction-tables
+  (testing "every message that the namespace builds keeps to its table"
+    (doseq [msg [(itip/publish calendar {:now now})
+                 (itip/request calendar {:now now})
+                 (itip/reply calendar "mailto:simon@gf.example" "ACCEPTED" {:now now})
+                 (itip/cancel calendar nil {:now now})
+                 (itip/cancel calendar ["mailto:anna@gf.example"] {:now now})
+                 (itip/refresh calendar "mailto:anna@gf.example" {:now now})
+                 (itip/counter calendar {:now now})
+                 (itip/decline-counter (itip/counter calendar) {:now now})
+                 (itip/add calendar {:now now})]]
+      (is (= [] (itip/validation-errors msg)) (ical/value msg :method))))
+  (testing "a refresh has no DTSTART, and an ADD no rule"
+    (is (nil? (ical/property (event (itip/refresh calendar "mailto:anna@gf.example")) :dtstart)))
+    (is (nil? (ical/property (event (itip/add calendar)) :rrule))))
+  (testing "what a message breaks"
+    (let [msg (-> (itip/reply calendar "mailto:simon@gf.example" "ACCEPTED" {:now now})
+                  (update-in [:components 1 :properties] conj
+                             {:name :attendee :value "mailto:anna@gf.example"}))]
+      (is (= [{:error :repeated-property :level :error :path [:components 1] :property :attendee}]
+             (itip/validation-errors msg))))
+    (is (= [{:error :missing-property :level :error :path [] :property :method}]
+           (itip/validation-errors calendar)))))
+
+(deftest deciding-who-gets-what
+  (let [moved   (update-in calendar [:components 0 :properties 3] assoc :value "2026-10-12T20:00:00")
+        renamed (update-in calendar [:components 0 :properties 6] assoc :value "Møde")
+        no-anna (update-in calendar [:components 0 :properties] #(vec (remove (fn [p] (= "mailto:anna@gf.example" (:value p))) %)))
+        summary #(mapv (juxt :method :recipient :significant?) %)]
+    (testing "the organizer requests a new event from every attendee"
+      (is (= [["REQUEST" "mailto:anna@gf.example" true] ["REQUEST" "mailto:simon@gf.example" true]]
+             (summary (itip/messages nil calendar "mailto:board@gf.example")))))
+    (testing "a change is significant when it moves the event"
+      (is (= [true true] (map :significant? (itip/messages calendar moved "mailto:board@gf.example"))))
+      (is (= [false false] (map :significant? (itip/messages calendar renamed "mailto:board@gf.example")))))
+    (testing "an attendee who was removed gets a CANCEL"
+      (is (= [["REQUEST" "mailto:simon@gf.example" false] ["CANCEL" "mailto:anna@gf.example" true]]
+             (summary (itip/messages calendar no-anna "mailto:board@gf.example")))))
+    (testing "deleting the event cancels it for everyone"
+      (is (= ["CANCEL" "CANCEL"] (map :method (itip/messages calendar nil "mailto:board@gf.example")))))
+    (testing "nothing changed, nothing to send"
+      (is (= [] (itip/messages calendar calendar "mailto:board@gf.example"))))
+    (testing "an attendee replies when their status changes"
+      (let [accepted (update-in calendar [:components 0 :properties 8 :params] assoc :partstat "ACCEPTED")
+            [msg]    (itip/messages calendar accepted "mailto:simon@gf.example")]
+        (is (= ["REPLY" "mailto:board@gf.example"] ((juxt :method :recipient) msg)))
+        (is (= [] (itip/validation-errors (:calendar msg))))
+        (is (= "ACCEPTED" (get-in (ical/property (event (:calendar msg)) :attendee) [:params :partstat])))))))
+
 (deftest newer
   (let [v #(hash-map :properties [{:name :sequence :value %1} {:name :dtstamp :value %2}])]
     (is (itip/newer? (v 1 "2026-10-01T00:00:00Z") (v 0 "2026-10-02T00:00:00Z")))

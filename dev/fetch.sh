@@ -10,10 +10,14 @@ icaljs=33ba266282fac7c721d792e04124513df73fe140
 icalendar=5035ff8f445856c078f5514d1a604e5600a8a7ce
 
 cd "$(dirname "$0")/.."
-mkdir -p dev-resources/cldr dev-resources/libical dev-resources/icaljs dev-resources/icalendar
+mkdir -p dev-resources/cldr dev-resources/rfc dev-resources/libical dev-resources/icaljs \
+  dev-resources/icalendar
 
 curl -sSfL -o dev-resources/cldr/windowsZones.xml \
   "https://raw.githubusercontent.com/unicode-org/cldr/$cldr/common/supplemental/windowsZones.xml"
+
+# the restriction tables of iTIP
+curl -sSfL -o dev-resources/rfc/rfc5546.txt https://www.rfc-editor.org/rfc/rfc5546.txt
 
 # the recurrence rules with their instances (MPL-2.0)
 for f in icalrecur_test.txt icalrecur_test_rscale.txt; do

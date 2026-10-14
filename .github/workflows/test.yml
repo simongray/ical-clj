@@ -37,16 +37,17 @@ jobs:
             .cpcache
           key: clojure-${{ runner.os }}-${{ hashFiles('deps.edn') }}
 
-      # the test data of libical, ical.js and python icalendar, and CLDR's
-      # Windows zone names, at the commits that dev/fetch.sh pins
+      # the test data of libical, ical.js and python icalendar, CLDR's
+      # Windows zone names and RFC 5546, at the versions that dev/fetch.sh
+      # pins
       - name: Test data
         run: dev/fetch.sh
 
-      # the table of Windows zone names must be the one that CLDR gives
-      - name: Windows zone names
+      # the tables in src must be those that CLDR and RFC 5546 give
+      - name: Tables
         run: |
           clojure -X:tables
-          git diff --exit-code src/dk/simongray/ical/impl/windows.cljc
+          git diff --exit-code src/dk/simongray/ical/impl/windows.cljc src/dk/simongray/ical/impl/restrictions.cljc
 
       - name: JVM tests
         run: clojure -X:test

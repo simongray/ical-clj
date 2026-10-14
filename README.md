@@ -163,6 +163,12 @@ address that a message should come from:
 ;; => "text/calendar; method=REPLY; charset=UTF-8"
 ```
 
+When an event changes, `itip/messages` compares the old and the new
+version and returns the messages to send, each with its recipient: e.g.
+a REQUEST for the attendees and a CANCEL for those who were removed. Every
+message keeps to the restrictions of its method in RFC 5546, which
+`itip/validation-errors` checks.
+
 Validation errors
 -----------------
 
@@ -206,11 +212,11 @@ Development
 -----------
 
 ```bash
-dev/fetch.sh                      # once, for the test data and CLDR's table
+dev/fetch.sh                      # once, for the test data and the tables' sources
 clojure -X:test                   # the tests on the JVM
 npm install                       # once, for the Node tests
 clojure -M:cljs compile test      # the tests in Node
-clojure -X:tables                 # the Windows zone names, from CLDR
+clojure -X:tables                 # the tables from CLDR and RFC 5546
 ```
 
 The fetch script downloads the test data of
@@ -218,7 +224,9 @@ The fetch script downloads the test data of
 [ical.js](https://github.com/kewisch/ical.js) and
 [python icalendar](https://github.com/collective/icalendar) into
 `dev-resources/` (which Git ignores), at the commits that the library
-follows. The examples of RFC 5545 are in the tests themselves.
+follows. The examples of RFC 5545 and the tests of dateutil and
+sabre/vobject are in the tests themselves, the latter two made by the
+scripts in `dev/`.
 
 The public namespaces are the root, `rrule`, `tz`, `itip` and `jcal`. The
 internal ones are under `impl`:
@@ -227,6 +235,7 @@ internal ones are under `impl`:
 - `impl.values`, the value types
 - `impl.parser` and `impl.serializer`, which read and write components
 - `impl.registry`, what the RFCs say about each property and component
+- `impl.restrictions`, what each method of iTIP allows in a message
 - `impl.civil` and `impl.expansion`, date arithmetic and recurrence rules
 - `impl.recurrence`, recurrence sets and their instances
 - `impl.zones` and `impl.windows`, time zones and Windows zone names

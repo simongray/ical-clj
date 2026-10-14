@@ -11,6 +11,7 @@
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.recurrence :as recurrence]
+            [dk.simongray.ical.impl.restrictions :as restrictions]
             [dk.simongray.ical.tz :as tz]))
 
 (def ^:private scheduled
@@ -61,18 +62,53 @@
   [cal f]
   (update cal :components (fn [cs] (mapv #(if (scheduled (:name %)) (f %) %) cs))))
 
+(defn- sequence-of
+  "The SEQUENCE of the component `c`, 0 when it has none."
+  [c]
+  (let [n (value c :sequence)]
+    (if (number? n) n 0)))
+
+(defn- kind
+  "The name of the first scheduled component of the calendar `cal`."
+  [cal]
+  (some #(when (scheduled (:name %)) (:name %)) (:components cal)))
+
+(defn- table
+  "The restriction table of RFC 5546, section 3, for the `method` and the
+  calendar `cal`, or nil when the method doesn't schedule its component."
+  [cal method]
+  (get restrictions/tables [method (kind cal)]))
+
+(defn- restrict
+  "The scheduled component `c` without the properties and components that
+  the restrictions `allowed` forbid, and with a SEQUENCE when they
+  require one."
+  [allowed c]
+  (let [forbidden? #(= "0" (allowed (:name %)))
+        c          (-> (remove-properties c forbidden?)
+                       (update :components #(vec (remove forbidden? %))))]
+    (cond-> c
+      (empty? (:components c))                            (dissoc :components)
+      (and (= "1" (allowed :sequence)) (not (prop c :sequence))) (set-property {:name :sequence :value 0}))))
+
 ;; RFC 5546, section 1.4: the METHOD of an iCalendar object makes it a
-;; scheduling message
+;; scheduling message, and section 3 says what a message of each method
+;; holds
 (defn- message
   "The calendar `cal` as a message of the `method`: with its METHOD, a
-  DTSTAMP of now in each scheduled component, and a VTIMEZONE for each
-  TZID it uses."
+  DTSTAMP of now in each scheduled component and a VTIMEZONE for each TZID
+  it uses, but without what the method's restriction table forbids."
   [cal method opts]
-  (let [stamp (dtstamp (now-of opts))]
-    (-> cal
-        (set-property {:name :method :value method})
-        (update-scheduled #(set-property % stamp))
-        tz/with-timezones)))
+  (let [stamp (dtstamp (now-of opts))
+        msg   (-> cal
+                  (set-property {:name :method :value method})
+                  (update-scheduled #(set-property % stamp))
+                  tz/with-timezones)]
+    (if-let [{:keys [calendar component]} (table msg method)]
+      (-> msg
+          (update :components #(vec (remove (fn [c] (= "0" (calendar (:name c)))) %)))
+          (update-scheduled #(restrict component %)))
+      msg)))
 
 (defn address
   "The calendar user address `s` (RFC 5545, section 3.3.3) without mailto:
@@ -105,8 +141,24 @@
   ([cal opts]
    (message cal "REQUEST" opts)))
 
-;; RFC 5546, section 3.2.3: a reply has the one attendee who replies,
-;; and what identifies the component
+(defn- attendee-of
+  "The ATTENDEE of the component `c` with the address `attendee`, or a new
+  one."
+  [c attendee]
+  (or (some #(when (attendee? attendee %) %) (:properties c))
+      {:name :attendee :value attendee}))
+
+;; RFC 5546, sections 3.2.3 and 3.2.6: a reply or a refresh has the one
+;; attendee who sends it, and what identifies the component
+(defn- from-attendee
+  "The scheduled component `c` with only what identifies it and the
+  ATTENDEE property `a`."
+  [c a]
+  (-> (remove-properties c #(not (#{:uid :recurrence-id :sequence :dtstart :organizer} (:name %))))
+      (update :properties conj a)
+      (dissoc :components)))
+
+;; RFC 5546, section 3.2.3
 (defn reply
   "The REPLY from the attendee with the address `attendee` to the calendar
   `cal`, with the participation status `partstat`, e.g. \"ACCEPTED\",
@@ -119,22 +171,55 @@
   ([cal attendee partstat]
    (reply cal attendee partstat {}))
   ([cal attendee partstat opts]
-   (let [kept #{:uid :recurrence-id :sequence :dtstart :organizer}
-         one  (fn [c]
-                (let [found (some #(when (attendee? attendee %) %) (:properties c))
-                      a     (-> (or found {:name :attendee :value attendee})
-                                (update :params #(-> % (dissoc :rsvp) (assoc :partstat partstat))))]
-                  (-> (remove-properties c #(not (kept (:name %))))
-                      (update :properties conj a)
-                      (dissoc :components))))]
-     (-> (update-scheduled cal one)
-         (message "REPLY" opts)))))
+   (-> (update-scheduled cal (fn [c]
+                               (from-attendee c (update (attendee-of c attendee) :params
+                                                        #(-> % (dissoc :rsvp)
+                                                             (assoc :partstat partstat))))))
+       (message "REPLY" opts))))
 
-(defn- sequence-of
-  "The SEQUENCE of the component `c`, 0 when it has none."
-  [c]
-  (let [n (value c :sequence)]
-    (if (number? n) n 0)))
+;; RFC 5546, section 3.2.6
+(defn refresh
+  "The REFRESH from the attendee with the address `attendee`, which asks
+  the organizer for the latest version of the calendar `cal`. The `opts`
+  can give :now, the inst to use for its DTSTAMPs."
+  ([cal attendee]
+   (refresh cal attendee {}))
+  ([cal attendee opts]
+   (-> (update-scheduled cal #(from-attendee % (attendee-of % attendee)))
+       (message "REFRESH" opts))))
+
+;; RFC 5546, section 3.2.7: an attendee proposes a change with the whole
+;; component, and doesn't increment SEQUENCE
+(defn counter
+  "The calendar `cal`, as an attendee would change it, as a COUNTER that
+  proposes the change to the organizer. The `opts` can give :now, the inst
+  to use for its DTSTAMPs."
+  ([cal]
+   (counter cal {}))
+  ([cal opts]
+   (message cal "COUNTER" opts)))
+
+;; RFC 5546, section 3.2.8
+(defn decline-counter
+  "The DECLINECOUNTER with which an organizer turns down the proposal of
+  the COUNTER message `msg`. The `opts` can give :now, the inst to use for
+  its DTSTAMPs."
+  ([msg]
+   (decline-counter msg {}))
+  ([msg opts]
+   (message msg "DECLINECOUNTER" opts)))
+
+;; RFC 5546, sections 2.1.4 and 3.2.4: the organizer increments SEQUENCE
+;; with each ADD
+(defn add
+  "The calendar `cal`, with instances to add to a recurring event that
+  the attendees already have, as an ADD message with an incremented
+  SEQUENCE. The `opts` can give :now, the inst to use for its DTSTAMPs."
+  ([cal]
+   (add cal {}))
+  ([cal opts]
+   (-> (update-scheduled cal #(set-property % {:name :sequence :value (inc (sequence-of %))}))
+       (message "ADD" opts))))
 
 ;; RFC 5546, section 3.2.5: a cancellation increments SEQUENCE
 (defn cancel
@@ -325,6 +410,154 @@
       ("REQUEST" "PUBLISH" "ADD")   (reduce #(apply-update %1 msg %2) cal ms)
       "CANCEL"                      (reduce apply-cancel cal ms)
       cal)))
+
+(defn- presence-errors
+  "The errors of the counts `counts` of names against the `presences` of a
+  restriction table, at the `path`, where `what` is :property or
+  :component."
+  [counts presences path what]
+  (for [[k p] presences
+        :let  [n (get counts k 0)
+               e (cond
+                   (and (#{"1" "1+"} p) (zero? n))      :missing
+                   (and (#{"1" "0 or 1"} p) (< 1 n))    :repeated
+                   (and (= "0" p) (pos? n))             :not-allowed)]
+        :when e]
+    {:error (keyword (str (name e) "-" (name what))) :level :error :path path what k}))
+
+;; RFC 5546, section 3
+(defn validation-errors
+  "The ways that the message `msg` breaks the restriction table of RFC
+  5546, section 3, for its METHOD and its component, as maps like those of
+  ical/validation-errors, e.g. {:error :not-allowed-property :level :error
+  :path [:components 1] :property :attendee}. They come on top of the
+  message's errors as a calendar, which ical/validation-errors gives."
+  [msg]
+  (let [method (some-> (value msg :method) str str/upper-case)
+        k      (kind msg)
+        t      (table msg method)
+        err    #(merge {:error %1 :level :error :path []} %2)]
+    (cond
+      (nil? method) [(err :missing-property {:property :method})]
+      (nil? k)      [(err :missing-component {:component :vevent})]
+      (nil? t)      [(err :method-not-allowed {:method method :component k})]
+      :else
+      (vec (concat
+            (presence-errors (frequencies (map :name (:components msg))) (:calendar t) [] :component)
+            (for [[i c] (map-indexed vector (:components msg))
+                  :when (= k (:name c))
+                  :let  [path [:components i]]
+                  e     (concat
+                         (presence-errors (frequencies (map :name (:properties c)))
+                                          (dissoc (:component t) :valarm) path :property)
+                         (presence-errors (frequencies (map :name (:components c)))
+                                          (select-keys (:component t) [:valarm]) path :component))]
+              e)
+            ;; RFC 5546, section 3.2: all the components have the same UID
+            (when (< 1 (count (distinct (for [c (:components msg) :when (= k (:name c))]
+                                          (value c :uid)))))
+              [(err :different-uids {})]))))))
+
+(defn- organizer-of
+  "The ORGANIZER of the first scheduled component of the calendar `cal`."
+  [cal]
+  (some #(when (scheduled (:name %)) (value % :organizer)) (:components cal)))
+
+(defn- attendees-of
+  "The addresses of the attendees of the scheduled components of the
+  calendar `cal`, as written, without the `organizer`, by their form for
+  comparing."
+  [cal organizer]
+  (into {} (for [c     (:components cal)
+                 :when (scheduled (:name c))
+                 p     (:properties c)
+                 :when (and (= :attendee (:name p)) (not= (address organizer) (address (:value p))))]
+             [(address (:value p)) (:value p)])))
+
+(defn- partstats
+  "The participation status of the attendee `a` in each scheduled
+  component of the calendar `cal`, by the identity of the component."
+  [cal a]
+  (into {} (for [c     (:components cal)
+                 :when (scheduled (:name c))
+                 p     (:properties c)
+                 :when (attendee? a p)]
+             [(identity-of cal c) (get-in p [:params :partstat] "NEEDS-ACTION")])))
+
+(defn- organizer-messages
+  "The messages that the organizer sends when the calendar changes from
+  `old` to `new`: a REQUEST to each attendee of `new` when anything
+  changed or the attendee is new, and a CANCEL to each attendee that
+  `new` doesn't have, or to all of them when `new` is nil."
+  [old new organizer opts]
+  (let [before  (if old (attendees-of old organizer) {})
+        after   (if new (attendees-of new organizer) {})
+        changed (not= old new)
+        olds    (into {} (for [c (:components old) :when (scheduled (:name c))]
+                           [(identity-of old c) c]))
+        sig?    (boolean (or (nil? old)
+                             (some #(let [o (get olds (identity-of new %))]
+                                      (or (nil? o) (significant-change? o %)))
+                                   (filter #(scheduled (:name %)) (:components new)))))]
+    (concat
+     (when (and new changed)
+       (let [msg (request new opts)]
+         (for [[k a] (sort after)]
+           {:method "REQUEST" :recipient a :calendar msg
+            :significant? (or sig? (not (contains? before k)))})))
+     (when old
+       (for [[k a] (sort before)
+             :when (not (contains? after k))]
+         {:method "CANCEL" :recipient a :calendar (cancel old (when new [a]) opts)
+          :significant? true})))))
+
+(defn- attendee-messages
+  "The REPLY that the attendee `user` sends to the organizer when the
+  calendar changes from `old` to `new`, with the components where their
+  participation status changed, or declining them all when `new` is nil."
+  [old new user organizer opts]
+  (let [before (if old (partstats old user) {})]
+    (if (nil? new)
+      [{:method "REPLY" :recipient organizer :calendar (reply old user "DECLINED" opts)
+        :significant? true}]
+      (let [changed (filter #(and (scheduled (:name %))
+                                  (let [id (identity-of new %)
+                                        ps (get (partstats new user) id)]
+                                    (and ps (not= ps (get before id)))))
+                            (:components new))]
+        (when (seq changed)
+          [{:method       "REPLY"
+            :recipient    organizer
+            :calendar     (-> (assoc new :components
+                                     (concat (remove #(scheduled (:name %)) (:components new))
+                                             (map #(from-attendee % (attendee-of % user)) changed)))
+                              (message "REPLY" opts))
+            :significant? true}])))))
+
+;; This is the design of sabre/vobject's ITip\Broker, which Nextcloud uses
+(defn messages
+  "The messages that the calendar user with the address `user` sends when
+  their copy of a calendar changes from `old` to `new`, either of which
+  can be nil for an event that's new or deleted. Each is a map of :method,
+  :recipient, :calendar, the message, and :significant?, whether the
+  change is one that RFC 5546, section 2.1.4, calls significant.
+
+  The organizer sends a REQUEST to each attendee when anything changed,
+  and a CANCEL to those who were removed. An attendee sends a REPLY to the
+  organizer when their PARTSTAT changed, and declines when they delete the
+  event. The `opts` can give :now, the inst to use for the DTSTAMPs.
+
+      (messages old new \"mailto:board@gf.example\")
+      ;; => [{:method \"REQUEST\" :recipient \"mailto:simon@gf.example\"
+      ;;      :calendar {...} :significant? true}]"
+  ([old new user]
+   (messages old new user {}))
+  ([old new user opts]
+   (let [organizer (or (organizer-of new) (organizer-of old))]
+     (cond
+       (nil? organizer)                       []
+       (= (address user) (address organizer)) (vec (organizer-messages old new organizer opts))
+       :else                                  (vec (attendee-messages old new user organizer opts))))))
 
 ;; RFC 6047, section 2.4
 (defn content-type

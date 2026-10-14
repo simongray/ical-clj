@@ -1,7 +1,8 @@
 (ns dk.simongray.ical.tables
-  "Write the table of Windows zone names in src from CLDR's
-  windowsZones.xml, which dev/fetch.sh downloads, and the table of past
-  zone transitions that the tests compare the platforms with.
+  "Write the tables in src from the files that dev/fetch.sh downloads:
+  the Windows zone names from CLDR's windowsZones.xml, and the restriction
+  tables of iTIP from RFC 5546. Also write the table of past zone
+  transitions that the tests compare the platforms with.
 
       clojure -X:tables
       clojure -X:tables dk.simongray.ical.tables/write-transitions!"
@@ -31,9 +32,78 @@
                   [(str/lower-case display) iana]]))
        (into (sorted-map))))
 
+(def rfc-5546
+  "The text of RFC 5546, which holds the restriction tables of iTIP."
+  "dev-resources/rfc/rfc5546.txt")
+
+(def restrictions-target
+  "The namespace that holds the restriction tables."
+  "src/dk/simongray/ical/impl/restrictions.cljc")
+
+(defn- table-rows
+  "The rows of the restriction table that starts at the line `i` of
+  `lines`, each a vector of its indentation, its name and its presence,
+  until the next table or section."
+  [lines i]
+  (->> (subvec lines (inc i))
+       (take-while #(not (re-find #"Constraints for a METHOD|^\d+\.\d+\.\d+\. " %)))
+       (keep #(re-matches #"\s*\|( *)([A-Z][A-Z-]*)\s*\|\s*([^|]*?)\s*\|.*\|\s*" %))
+       (remove #(#{"Component" "Presence"} (nth % 2)))
+       (map (fn [[_ indent name presence]] [(count indent) name presence]))))
+
+(defn restriction-tables
+  "The restriction tables of RFC 5546, section 3, in the text `text`, by
+  pairs of method and component name. Each is a map of :calendar, the
+  presence of each component of the calendar, and :component, the
+  presence of each property and component inside the scheduled component.
+  The IANA and X- extensions, which may always be there, are left out."
+  [text]
+  (let [lines (vec (str/split-lines text))]
+    (into (sorted-map)
+          (for [[i line] (map-indexed vector lines)
+                :let     [[_ method component] (re-find #"Constraints for a METHOD:(\w+) of a (\w+)" line)]
+                :when    method
+                :let     [rows (remove (fn [[_ n]] (or (= "METHOD" n) (re-find #"^(IANA|X)-" n)))
+                                       (table-rows lines i))
+                          kw   #(keyword (str/lower-case %))]]
+            [[method (kw component)]
+             {:calendar  (into (sorted-map) (for [[ind n p] rows :when (= 1 ind)] [(kw n) p]))
+              :component (into (sorted-map) (for [[ind n p] rows :when (< 1 ind)] [(kw n) p]))}]))))
+
+(defn write-restrictions!
+  "Write the restriction tables to the restrictions-target namespace."
+  []
+  (let [tables (restriction-tables (slurp (io/file rfc-5546)))]
+    (spit restrictions-target
+          (str "(ns ^:no-doc dk.simongray.ical.impl.restrictions\n"
+               "  \"The restriction tables of iTIP, RFC 5546, section 3: for each method\n"
+               "  and component, which components and properties a message may hold,\n"
+               "  and how many. A presence is \\\"1\\\", \\\"1+\\\", \\\"0\\\", \\\"0+\\\" or\n"
+               "  \\\"0 or 1\\\". Made by dev/dk/simongray/ical/tables.clj; don't edit it\n"
+               "  by hand.\")\n\n"
+               "(def tables\n"
+               "  \"The table of each pair of method and component name, as a map of\n"
+               "  :calendar, the presence of each component of the calendar, and\n"
+               "  :component, the presence of each property and component inside the\n"
+               "  scheduled component.\"\n"
+               "  {"
+               (str/join "\n   "
+                         (for [[k {:keys [calendar component]}] tables
+                               :let [pairs (fn [m] (map (fn [[pk pv]] (str (pr-str pk) " " (pr-str pv))) m))]]
+                           (str (pr-str k)
+                                "\n   {:calendar  {" (str/join " " (pairs calendar)) "}"
+                                "\n    :component {"
+                                (str/join "\n                "
+                                          (map #(str/join " " %) (partition-all 4 (pairs component))))
+                                "}}")))
+               "})\n"))
+    (println "Wrote" (count tables) "restriction tables to" restrictions-target)))
+
 (defn write!
-  "Write the table to the target namespace."
+  "Write the table of Windows zone names and the restriction tables of
+  iTIP to their namespaces."
   [_]
+  (write-restrictions!)
   (let [table (mappings (slurp (io/file source)))]
     (spit target
           (str "(ns ^:no-doc dk.simongray.ical.impl.windows\n"
