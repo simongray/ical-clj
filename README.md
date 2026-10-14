@@ -115,6 +115,8 @@ parses, writes and expands it:
 ```
 
 As RFC 5545 says, a monthly rule from the 31st skips the shorter months.
+With RSCALE=GREGORIAN and SKIP=BACKWARD, as RFC 7529 has it, the rule
+takes their last day instead.
 A time that doesn't exist, because the clocks go forward, moves forward
 by the length of the gap. DTSTART is always the first instance.
 

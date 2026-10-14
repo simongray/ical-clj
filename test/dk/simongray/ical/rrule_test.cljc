@@ -60,6 +60,11 @@
       (is (= ["2026-10-12T19:00:00" "2026-10-13T19:00:00"]
              (vec (rrule/occurrences (rrule/parse "FREQ=DAILY;UNTIL=20261013")
                                      "2026-10-12T19:00:00")))))
+    (testing "RSCALE=GREGORIAN with SKIP moves the days a month lacks (RFC 7529)"
+      (is (= ["2026-01-31" "2026-02-28" "2026-03-31"]
+             (occ "RSCALE=GREGORIAN;FREQ=MONTHLY;SKIP=BACKWARD" "2026-01-31" 3)))
+      (is (= ["2026-01-31" "2026-03-01" "2026-03-31"]
+             (occ "RSCALE=GREGORIAN;FREQ=MONTHLY;SKIP=FORWARD" "2026-01-31" 3))))
     (testing "rules in another calendar aren't expanded"
       (is (nil? (rrule/occurrences (rrule/parse "RSCALE=CHINESE;FREQ=YEARLY")
                                    "2026-10-12"))))))

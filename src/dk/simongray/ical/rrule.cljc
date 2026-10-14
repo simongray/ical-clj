@@ -29,15 +29,16 @@
   (values/write-recur rule))
 
 ;; RFC 7529, section 3: a rule in another calendar than the Gregorian one
-;; needs that calendar, and SKIP needs RSCALE
+;; needs that calendar
 (defn expandable?
   "Whether the library can expand the recurrence `rule`. It can unless the
-  rule has an RSCALE other than GREGORIAN, or a SKIP other than OMIT."
+  rule has an RSCALE other than GREGORIAN, or a SKIP that RFC 7529
+  doesn't define."
   [rule]
   (and (map? rule)
        (contains? values/freqs (:freq rule))
        (contains? #{nil "GREGORIAN"} (:rscale rule))
-       (contains? #{nil "OMIT"} (:skip rule))))
+       (contains? #{nil "OMIT" "BACKWARD" "FORWARD"} (:skip rule))))
 
 (defn- date?
   "Whether `s` is a date rather than a date-time."

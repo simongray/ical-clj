@@ -106,6 +106,8 @@
         day              (civil/floor-div start 86400)
         wd               (civil/weekday day)
         rule             (-> rule
+                             ;; RFC 7529, section 3: SKIP needs RSCALE
+                             (cond-> (not= "GREGORIAN" (:rscale rule)) (dissoc :skip))
                              (update :interval #(max 1 (or % 1)))
                              (update :wkst #(weekdays (or % "MO")))
                              (update :byday #(some->> % (mapv read-byday)))
@@ -280,15 +282,60 @@
          distinct
          sort)))
 
+(defn- moved-day
+  "The day that SKIP moves the `n`th day of the span of `length` days from
+  the day `first` to, when there's no such day: the last day of the span
+  (or the one before it) going BACKWARD, and the day after it (or its first
+  day) going FORWARD, for a positive (or negative) `n`."
+  [skip n first length]
+  (cond
+    (<= 1 (abs n) length) nil
+    (pos? n)              (if (= "BACKWARD" skip) (+ first length -1) (+ first length))
+    :else                 (if (= "BACKWARD" skip) (dec first) first)))
+
+(defn- period-months
+  "The months of the `k`th period of a MONTHLY or YEARLY `rule`, as pairs
+  of year and month."
+  [{:keys [freq interval year month bymonth]} k]
+  (case freq
+    "MONTHLY" (let [i (+ (dec month) (* k interval))]
+                [[(+ year (civil/floor-div i 12)) (inc (mod i 12))]])
+    "YEARLY"  (let [y (+ year (* k interval))]
+                (for [m (sort (distinct (or bymonth (range 1 13))))] [y m]))
+    nil))
+
+;; RFC 7529, section 4.1: SKIP moves a day of BYMONTHDAY that a month
+;; lacks after BYMONTHDAY and before BYDAY, and libical moves a day of
+;; BYYEARDAY that a year lacks too
+(defn- skipped-days
+  "The days that the SKIP of a Gregorian `rule` moves the days of its
+  BYMONTHDAY and BYYEARDAY that the `k`th period lacks to."
+  [{:keys [skip freq year interval bymonthday byyearday] :as rule} k]
+  (when (and (#{"BACKWARD" "FORWARD"} skip) (#{"MONTHLY" "YEARLY"} freq))
+    (concat
+     (for [[y m] (period-months rule k)
+           n     bymonthday
+           :let  [day (moved-day skip n (civil/days-from-civil y m 1) (civil/days-in-month y m))]
+           :when day]
+       day)
+     (when (= "YEARLY" freq)
+       (let [y (+ year (* k interval))]
+         (for [n     byyearday
+               :let  [day (moved-day skip n (civil/days-from-civil y 1 1) (civil/days-in-year y))]
+               :when day]
+           day))))))
+
 (defn period-set
   "The local times of the `k`th period of the `rule`, from the local time
   `start`, in order."
   [rule k start]
-  (let [ts (sort (distinct (times rule k start)))
-        xs (for [day   (period-days rule k start)
-                 :when (day-passes? rule day)
-                 t     ts]
-             (+ (* 86400 day) t))]
+  (let [ts   (sort (distinct (times rule k start)))
+        days (->> (concat (filter #(day-passes? rule %) (period-days rule k start))
+                          (filter #(or (nil? (:byday rule)) (byday-match? rule %))
+                                  (skipped-days rule k)))
+                  distinct
+                  sort)
+        xs   (for [day days, t ts] (+ (* 86400 day) t))]
     (cond->> xs
       (:bysetpos rule) (set-positions (:bysetpos rule)))))
 
