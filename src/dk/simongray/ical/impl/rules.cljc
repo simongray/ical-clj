@@ -79,10 +79,14 @@
 
 (defn- combination-errors
   "The errors of the parts of the `rule` that can't go together."
-  [{:keys [freq byday byweekno bysetpos rscale skip] :as rule}]
+  [{:keys [freq byday bymonthday byyearday byweekno bysetpos rscale skip] :as rule}]
   (concat
    (when (and (:count rule) (:until rule))
      [(error :count-and-until)])
+   (when (and bymonthday (= "WEEKLY" freq))
+     [(error :bymonthday-not-allowed)])
+   (when (and byyearday (#{"DAILY" "WEEKLY" "MONTHLY"} freq))
+     [(error :byyearday-not-allowed)])
    (when (and byweekno (not= "YEARLY" freq))
      [(error :byweekno-not-yearly)])
    (when (and (some #(re-find #"\d" %) byday)

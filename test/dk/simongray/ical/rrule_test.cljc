@@ -25,6 +25,9 @@
   (testing "parts by lower-case key, case and the RRULE prefix forgiven"
     (is (= {:freq "WEEKLY" :interval 2 :byday ["MO" "WE"] :until "2026-12-31"}
            (rrule/parse "RRULE:freq=weekly;INTERVAL=2;BYDAY=mo,WE;UNTIL=20261231"))))
+  (testing "ordinals of BYDAY as numbers, without a plus or leading zeros"
+    (is (= {:freq "MONTHLY" :byday ["1MO" "2TU" "-1FR" "SA"]}
+           (rrule/parse "FREQ=MONTHLY;BYDAY=01MO,+2TU,-01FR,SA"))))
   (testing "no FREQ, an unknown FREQ, a part that doesn't read or comes twice"
     (is (nil? (rrule/parse "BYDAY=MO")))
     (is (nil? (rrule/parse "FREQ=SOMETIMES")))
@@ -43,6 +46,11 @@
     (is (= [{:error :rule-part-out-of-range :level :error :part :bymonthday :value 32}
             {:error :byweekno-not-yearly :level :error}]
            (rrule/validation-errors "FREQ=MONTHLY;BYMONTHDAY=32;BYWEEKNO=3")))
+    (is (= [{:error :bymonthday-not-allowed :level :error}]
+           (rrule/validation-errors {:freq "WEEKLY" :bymonthday [3]})))
+    (is (= [{:error :byyearday-not-allowed :level :error}]
+           (rrule/validation-errors {:freq "MONTHLY" :byyearday [100]})))
+    (is (= [] (rrule/validation-errors {:freq "HOURLY" :byyearday [100]})))
     (is (= [{:error :skip-without-rscale :level :error}]
            (rrule/validation-errors "FREQ=MONTHLY;SKIP=BACKWARD"))))
   (testing "a map with parts of the wrong form, or no FREQ"

@@ -229,9 +229,11 @@
                 (if (= ::invalid dt) (read-date s) dt))
     (:count :interval)
     (if (re-matches #"\d{1,9}" s) (digits s) ::invalid)
-    :byday    (let [days (split-trimmed (str/upper-case s))]
-                (if (every? #(re-matches weekday-pattern %) days)
-                  (mapv #(str/replace % "+" "") days)
+    ;; the ordinal as a number, so that +1MO and 01MO read as 1MO
+    :byday    (let [days (mapv #(re-matches weekday-pattern %)
+                               (split-trimmed (str/upper-case s)))]
+                (if (every? some? days)
+                  (mapv (fn [[_ n d]] (str (some-> n (str/replace "+" "") digits) d)) days)
                   ::invalid))
     :wkst     (let [d (str/upper-case s)]
                 (if (re-matches #"SU|MO|TU|WE|TH|FR|SA" d) d ::invalid))
