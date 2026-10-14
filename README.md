@@ -216,6 +216,7 @@ dev/fetch.sh                      # once, for the test data and the tables' sour
 clojure -X:test                   # the tests on the JVM
 npm install                       # once, for the Node tests
 clojure -M:cljs compile test      # the tests in Node
+clojure -M:cljs compile browser-test  # the tests in a browser, from target/browser-test
 clojure -X:tables                 # the tables from CLDR and RFC 5546
 ```
 
