@@ -114,12 +114,13 @@
 (defn- rule-times
   "The local times that the rules of the properties `ps` generate from the
   local time `start` in the frame `fr`, as one sorted seq per rule, by
-  the function `f` of the expansion namespace."
-  [f ps start fr]
+  the function `f` of the expansion namespace. Those before the local
+  time `from` can be left out."
+  [f ps start from fr]
   (for [p     ps
         :let  [rule (:value p)]
         :when (and (map? rule) (rrule/expandable? rule))]
-    (f rule start (:date? fr) (until-past fr (:until rule)))))
+    (f rule start (:date? fr) (until-past fr (:until rule)) from)))
 
 (defn- merge-sorted
   "The sorted sequences `xss` merged into one sorted sequence without
@@ -151,12 +152,13 @@
 (defn ids
   "The recurrence ids of the component `c` in the calendar `cal`, local
   times in the frame `fr` of its DTSTART, which is `start`, in order, as a
-  lazy sequence."
-  [cal c fr start opts]
+  lazy sequence. Those of rules before the local time `from` can be left
+  out."
+  [cal c fr start from opts]
   (let [wall     (if (and (:zone fr) (not (:date? fr)))
                    #(zones/wall-times (:zone fr) %)
                    identity)
-        rules    (rule-times expansion/rule-times (props c :rrule) start fr)
+        rules    (rule-times expansion/rule-times (props c :rrule) start from fr)
         rdates   (times-of cal (props c :rdate) fr opts)
         included (wall (merge-sorted (concat (if (seq rules) rules [[start]]) [rdates])))
         exdates  (props c :exdate)
@@ -169,7 +171,7 @@
                          (civil/seconds v)))
         excluded (merge-sorted
                   (cons (times-of cal (remove (set by-date) exdates) fr opts)
-                        (map wall (rule-times expansion/exclusion-times (props c :exrule) start fr))))]
+                        (map wall (rule-times expansion/exclusion-times (props c :exrule) start from fr))))]
     (cond-> (remove-sorted included excluded false)
       (seq days) (remove-sorted days true))))
 
@@ -453,25 +455,37 @@
   (when-let [pfr (and p (frame cal p opts))]
     (in-frame pfr (civil/seconds (:value p)) fr)))
 
-;; A day either side covers the difference between a local time and an
-;; instant
 (defn- reach
-  "The longest time in seconds from the recurrence id of an instance of
-  the component `c`, whose DTSTART is the local time `start` in the frame
-  `fr`, to its end, unless an override that isn't `ranged` replaces it:
-  the time to its DTEND or DUE, to the end of an RDATE's `periods`, or by
-  a `ranged` override, plus a day."
+  "The longest time in seconds, by the clock, from the recurrence id of an
+  instance of the component `c`, whose DTSTART is the local time `start`
+  in the frame `fr`, to its end, unless an override that isn't `ranged`
+  replaces it: the time to its DTEND or DUE, to the end of an RDATE's
+  `periods`, or by a `ranged` override."
   [cal c fr start periods ranged opts]
-  (+ 86400
-     (reduce max 0
-             (concat
-              [(some-> (end cal c opts) (local-in cal fr opts) (- start))]
-              (for [[t v] periods]
-                (- (or (:end v) (plus-duration fr t (:duration v))) t))
-              (for [[r o] ranged
-                    :let  [e (some-> (end cal o opts) (local-in cal fr opts))]
-                    :when e]
-                (- e r))))))
+  (reduce max 0
+          (concat
+           (some-> (end cal c opts) (local-in cal fr opts) (- start) vector)
+           (for [[t v] periods]
+             (- (or (:end v) (plus-duration fr t (:duration v))) t))
+           (for [[r o] ranged
+                 :let  [e (some-> (end cal o opts) (local-in cal fr opts))]
+                 :when e]
+             (- e r)))))
+
+;; An instance ends before an instant when its start does by more than
+;; its reach. In a zone, three hours cover the difference between the
+;; time by the clock and the time that passes when the clocks change, and
+;; the hour that a local time goes back when they go back.
+(defn- ends-before
+  "For the instant `t`, the earliest local time in the frame `fr` that an
+  instance of a reach of `r` seconds, which ends after `t`, can start at,
+  and a predicate of whether one that starts at a local time ends before
+  `t`."
+  [fr r t]
+  (let [margin   (if (:zone fr) 10800 0)
+        earliest (- t r margin)]
+    [(- (or (local-of fr earliest) earliest) margin)
+     #(< (+ (or (epoch fr %) %) r margin) t)]))
 
 (defn occurrences
   "The instances of the component `c` of the calendar `cal`, each a
@@ -498,10 +512,10 @@
                                                    str locale/upper-case))
                                         (frame cal (prop (val %) :dtstart) opts))
                                   overs))
-            after   (when-let [t (::after opts)]
-                      (- t (reach cal c fr start periods ranged opts)))
-            ids     (cond->> (merge-sorted [(ids cal c fr start opts) (keys overs)])
-                      after (remove #(and (< % after) (not (contains? overs %)))))]
+            [from before?] (when-let [t (::after opts)]
+                             (ends-before fr (reach cal c fr start periods ranged opts) t))
+            ids     (cond->> (merge-sorted [(ids cal c fr start (or from start) opts) (keys overs)])
+                      before? (remove #(and (not (contains? overs %)) (before? %))))]
         (map (fn [id]
                (if-let [o (get overs id)]
                  o

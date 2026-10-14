@@ -65,4 +65,29 @@
               "BUSY-UNAVAILABLE" [["2026-10-05T00:00:00Z" "2026-10-05T06:00:00Z"]
                                   ["2026-10-05T20:00:00Z" "2026-10-06T00:00:00Z"]]}
              (busy (apply calendar (concat closed weekdays))
-                   #inst "2026-10-05T00:00:00Z" #inst "2026-10-07T00:00:00Z"))))))
+                   #inst "2026-10-05T00:00:00Z" #inst "2026-10-07T00:00:00Z"))))
+    (testing "a year of hourly AVAILABLE times"
+      (is (= 1 (count (busy (calendar "BEGIN:VAVAILABILITY" "UID:a" "DTSTAMP:20261001T000000Z"
+                                      "DTSTART:20260101T000000Z"
+                                      "BEGIN:AVAILABLE" "UID:b" "DTSTAMP:20261001T000000Z"
+                                      "DTSTART:20260101T000000Z" "DTEND:20260101T003000Z"
+                                      "RRULE:FREQ=HOURLY" "END:AVAILABLE" "END:VAVAILABILITY")
+                            #inst "2026-01-01T00:00:00Z" #inst "2027-01-01T00:00:00Z")))))))
+
+(deftest edge-cases
+  (testing "floating times are in the zone :floating"
+    (is (= {"BUSY" [["2026-10-15T08:00:00Z" "2026-10-15T09:00:00Z"]]}
+           (->> (:properties (ical/free-busy (calendar "BEGIN:VEVENT" "UID:f" "DTSTART:20261015T100000"
+                                                       "DTEND:20261015T110000" "END:VEVENT")
+                                             #inst "2026-10-15T00:00:00Z" #inst "2026-10-16T00:00:00Z"
+                                             {:now #inst "2026-10-01T00:00:00Z" :uid "fb"
+                                              :floating "Europe/Copenhagen"}))
+                (filter #(= :freebusy (:name %)))
+                (into {} (map (fn [p] [(get-in p [:params :fbtype] "BUSY")
+                                       (mapv (juxt :start :end) (:value p))])))))))
+  (testing "an FBTYPE that RFC 5545 doesn't define is busy"
+    (is (= {"BUSY" [["2026-10-15T10:00:00Z" "2026-10-15T12:00:00Z"]]}
+           (busy (calendar "BEGIN:VFREEBUSY" "UID:f" "DTSTAMP:20261001T090000Z"
+                           "FREEBUSY;FBTYPE=X-OOO:20261015T100000Z/20261015T110000Z"
+                           "FREEBUSY:20261015T110000Z/20261015T120000Z" "END:VFREEBUSY")
+                 #inst "2026-10-15T00:00:00Z" #inst "2026-10-16T00:00:00Z")))))

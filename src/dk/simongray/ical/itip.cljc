@@ -92,6 +92,21 @@
       (empty? (:components c))                            (dissoc :components)
       (and (= "1" (allowed :sequence)) (not (prop c :sequence))) (set-property {:name :sequence :value 0}))))
 
+(defn- tzids
+  "The TZIDs of the properties of the component `c` and the components
+  inside it."
+  [c]
+  (into (set (keep #(get-in % [:params :tzid]) (:properties c)))
+        (mapcat tzids (:components c))))
+
+(defn- without-unused-timezones
+  "The calendar `cal` without the VTIMEZONEs whose TZIDs its other
+  components don't use."
+  [cal]
+  (let [used (set (mapcat tzids (remove #(= :vtimezone (:name %)) (:components cal))))]
+    (update cal :components
+            (fn [cs] (vec (remove #(and (= :vtimezone (:name %)) (not (used (value % :tzid)))) cs))))))
+
 ;; RFC 5546, section 1.4: the METHOD of an iCalendar object makes it a
 ;; scheduling message, and section 3 says what a message of each method
 ;; holds
@@ -105,11 +120,21 @@
                   (set-property {:name :method :value method})
                   (update-scheduled #(set-property % stamp))
                   tz/with-timezones)]
-    (if-let [{:keys [calendar component]} (table msg method)]
-      (-> msg
-          (update :components #(vec (remove (fn [c] (= "0" (calendar (:name c)))) %)))
-          (update-scheduled #(restrict component %)))
-      msg)))
+    (without-unused-timezones
+     (if-let [{:keys [calendar component]} (table msg method)]
+       (-> msg
+           (update :components #(vec (remove (fn [c] (= "0" (calendar (:name c)))) %)))
+           (update-scheduled #(restrict component %)))
+       msg))))
+
+(defn- one-scheduled
+  "The calendar `cal` with only the first of its scheduled components that
+  `pred` is true of, or else its first."
+  [cal pred]
+  (let [cs (filter #(scheduled (:name %)) (:components cal))
+        c  (or (first (filter pred cs)) (first cs))]
+    (update cal :components (fn [all] (vec (remove #(and (scheduled (:name %)) (not (identical? c %)))
+                                                   all))))))
 
 (defn address
   "The calendar user address `s` (RFC 5545, section 3.3.3) without mailto:
@@ -178,27 +203,30 @@
                                                              (assoc :partstat partstat))))))
        (message "REPLY" opts))))
 
-;; RFC 5546, section 3.2.6
+;; RFC 5546, section 3.2.6: a refresh has one component, which asks for
+;; the whole event
 (defn refresh
   "The REFRESH from the attendee with the address `attendee`, which asks
-  the organizer for the latest version of the calendar `cal`. The `opts`
-  can give :now, the inst to use for its DTSTAMPs."
+  the organizer for the latest version of the calendar `cal`. It refers to
+  the first scheduled component without a RECURRENCE-ID. The `opts` can
+  give :now, the inst to use for its DTSTAMPs."
   ([cal attendee]
    (refresh cal attendee {}))
   ([cal attendee opts]
-   (-> (update-scheduled cal #(from-attendee % (attendee-of % attendee)))
+   (-> (one-scheduled cal #(nil? (prop % :recurrence-id)))
+       (update-scheduled #(from-attendee % (attendee-of % attendee)))
        (message "REFRESH" opts))))
 
-;; RFC 5546, section 3.2.7: an attendee proposes a change with the whole
-;; component, and doesn't increment SEQUENCE
+;; RFC 5546, section 3.2.7: an attendee proposes a change to one
+;; component, with the whole component, and doesn't increment SEQUENCE
 (defn counter
-  "The calendar `cal`, as an attendee would change it, as a COUNTER that
-  proposes the change to the organizer. The `opts` can give :now, the inst
-  to use for its DTSTAMPs."
+  "The first scheduled component of the calendar `cal`, as an attendee
+  would change it, as a COUNTER that proposes the change to the organizer.
+  The `opts` can give :now, the inst to use for its DTSTAMPs."
   ([cal]
    (counter cal {}))
   ([cal opts]
-   (message cal "COUNTER" opts)))
+   (message (one-scheduled cal (constantly true)) "COUNTER" opts)))
 
 ;; RFC 5546, section 3.2.8
 (defn decline-counter
@@ -210,16 +238,18 @@
   ([msg opts]
    (message msg "DECLINECOUNTER" opts)))
 
-;; RFC 5546, sections 2.1.4 and 3.2.4: the organizer increments SEQUENCE
-;; with each ADD
+;; RFC 5546, sections 2.1.4 and 3.2.4: an ADD has one component, the
+;; instance to add, and the organizer increments SEQUENCE with each
 (defn add
-  "The calendar `cal`, with instances to add to a recurring event that
-  the attendees already have, as an ADD message with an incremented
-  SEQUENCE. The `opts` can give :now, the inst to use for its DTSTAMPs."
+  "The first scheduled component of the calendar `cal`, an instance to add
+  to a recurring event that the attendees already have, with the event's
+  UID, as an ADD message with an incremented SEQUENCE. The `opts` can give
+  :now, the inst to use for its DTSTAMPs."
   ([cal]
    (add cal {}))
   ([cal opts]
-   (-> (update-scheduled cal #(set-property % {:name :sequence :value (inc (sequence-of %))}))
+   (-> (one-scheduled cal (constantly true))
+       (update-scheduled #(set-property % {:name :sequence :value (inc (sequence-of %))}))
        (message "ADD" opts))))
 
 ;; RFC 5546, section 3.2.5: a cancellation increments SEQUENCE
@@ -279,19 +309,36 @@
      (or (recurrence/instant-of cal p {:floating {:tzid "UTC" :offset 0}})
          (:value p)))])
 
+(declare instance-for attendees-of organizer-of)
+
+;; RFC 5546, section 3.2.5: the CANCEL that a removed attendee gets has a
+;; higher SEQUENCE, and the event's SEQUENCE must not fall behind it
 (defn revise
   "The calendar `new` with a higher SEQUENCE in each scheduled component
   that changes significantly from its version in the calendar `old` (see
-  significant-change?). The new SEQUENCE is one more than the higher of
-  the two, and a component that `old` lacks keeps its own."
+  significant-change?), or from the instance of `old`'s recurring
+  component that a new override replaces. Removing an attendee raises
+  SEQUENCE too. The new SEQUENCE is one more than the higher of the two,
+  and another component never has a lower SEQUENCE than its old version,
+  or keeps its own when `old` lacks it."
   [old new]
-  (let [olds (into {} (for [c (:components old) :when (scheduled (:name c))]
-                        [(identity-of old c) c]))]
+  (let [olds     (into {} (for [c (:components old) :when (scheduled (:name c))]
+                            [(identity-of old c) c]))
+        organizer (or (organizer-of new) (organizer-of old))
+        removed? (and old (seq (remove (set (keys (attendees-of new organizer)))
+                                       (keys (attendees-of old organizer)))))]
     (update-scheduled new (fn [c]
-                            (let [o (get olds (identity-of new c))]
-                              (if (and o (significant-change? o c))
+                            (let [o (or (get olds (identity-of new c))
+                                        (when (and old (prop c :recurrence-id)) (instance-for old c)))]
+                              (cond
+                                (or removed? (and o (significant-change? o c)))
                                 (set-property c {:name  :sequence
                                                  :value (inc (max (sequence-of o) (sequence-of c)))})
+
+                                (and o (< (sequence-of c) (sequence-of o)))
+                                (set-property c {:name :sequence :value (sequence-of o)})
+
+                                :else
                                 c))))))
 
 ;; RFC 5546, section 2.1.5: of two versions of the same component, the
@@ -353,9 +400,10 @@
       (and s (< (sequence-of m) (sequence-of s))) cal
       s                                (replace-components cal #(= id (identity-of cal %))
                                                            [(with-partstat s a)])
-      :else                            (if-let [i (instance-for cal m)]
-                                         (update cal :components conj (with-partstat i a))
-                                         cal))))
+      :else                            (let [i (instance-for cal m)]
+                                         (if (and i (>= (sequence-of m) (sequence-of i)))
+                                           (update cal :components conj (with-partstat i a))
+                                           cal)))))
 
 (defn- apply-update
   "The stored calendar `cal` with the components of the message `msg`
@@ -376,18 +424,101 @@
       :else
       (replace-components cal #(= (identity-of cal %) (identity-of msg m)) [m]))))
 
-;; RFC 5546, section 3.2.5: a cancelled component keeps its place, with
-;; its STATUS
-(defn- apply-cancel
-  "The stored calendar `cal` with the component `m` of a CANCEL message
-  in place of its stored version, when it's newer."
+(defn- master-of
+  "The stored component of the calendar `cal` without a RECURRENCE-ID that
+  has the name and the UID of the component `m`, or nil."
   [cal m]
-  (let [id   (identity-of cal m)
-        same (some #(when (= id (identity-of cal %)) %) (:components cal))]
+  (some #(when (and (= (:name m) (:name %)) (= (value m :uid) (value % :uid))
+                    (nil? (prop % :recurrence-id)))
+           %)
+        (:components cal)))
+
+(defn- with-properties-of
+  "The component `c` with the properties of `m` named `ks` that `m` has."
+  [c m ks]
+  (reduce #(if-let [p (prop m %2)] (set-property %1 p) %1) c ks))
+
+;; RFC 5546, section 3.2.4: "the Attendee treats each component in the ADD
+;; message as if it were referenced via an RDATE in the main component"
+(defn- apply-add
+  "The stored calendar `cal` with the instance `m` of an ADD message added
+  to its recurring component, as an RDATE and an override, when it's
+  newer. Without a stored component to add to, `m` is added as it is."
+  [cal m]
+  (let [master (master-of cal m)
+        start  (prop m :dtstart)
+        as     #(cond-> (assoc start :name %)
+                  true             (update :params dissoc :value)
+                  (empty? (dissoc (:params start) :value)) (dissoc :params))]
     (cond
-      (and same (not (newer? m same))) cal
-      same                             (replace-components cal #(= id (identity-of cal %)) [m])
-      :else                            (update cal :components conj m))))
+      (or (nil? master) (nil? start)) (update cal :components conj m)
+      (not (newer? m master))         cal
+      :else
+      (-> (replace-components cal #(identical? master %)
+                              [(-> (update master :properties conj
+                                           (update (as :rdate) :value vector))
+                                   (with-properties-of m [:sequence :dtstamp]))])
+          (update :components conj (set-property m (as :recurrence-id)))))))
+
+(defn- cancelled
+  "The component `c` as the component `m` of a CANCEL message leaves it:
+  with STATUS:CANCELLED, and the SEQUENCE and DTSTAMP of `m`."
+  [c m]
+  (-> (set-property c {:name :status :value "CANCELLED"})
+      (with-properties-of m [:sequence :dtstamp])))
+
+;; RFC 5546, section 3.2.5: a CANCEL without a RECURRENCE-ID cancels the
+;; whole event, and one with it an instance, or with RANGE=THISANDFUTURE
+;; the instances from it on. One that lists attendees, without STATUS,
+;; removes them, so for them the event is cancelled too. The stored
+;; components keep what they hold, with STATUS:CANCELLED, and a cancelled
+;; instance becomes an override.
+(defn- apply-cancel
+  "The stored calendar `cal` with what the component `m` of a CANCEL
+  message cancels, when it's newer."
+  [cal m]
+  (let [[k uid rid :as id] (identity-of cal m)
+        same?   #(= [k uid] (take 2 (identity-of cal %)))
+        exact   (some #(when (= id (identity-of cal %)) %) (:components cal))
+        against (or exact (master-of cal m))
+        future? (= "THISANDFUTURE"
+                   (some-> (prop m :recurrence-id) :params :range str locale/upper-case))
+        later?  #(let [r (nth (identity-of cal %) 2)]
+                   (and (number? r) (number? rid) (> r rid)))]
+    (cond
+      (or (nil? against) (not (newer? m against)))
+      cal
+
+      (nil? rid)
+      (update cal :components (fn [cs] (mapv #(if (same? %) (cancelled % m) %) cs)))
+
+      :else
+      (let [cal (cond-> cal
+                  future? (update :components
+                                  (fn [cs] (mapv #(if (and (same? %) (later? %)) (cancelled % m) %) cs))))]
+        (if exact
+          (replace-components cal #(identical? exact %) [(cancelled exact m)])
+          (if-let [i (instance-for cal m)]
+            (update cal :components conj (cancelled (set-property i (prop m :recurrence-id)) m))
+            cal))))))
+
+;; RFC 5545, section 3.2.19: the TZIDs of the stored components need their
+;; VTIMEZONEs
+(defn- with-timezones-of
+  "The calendar `cal` with the VTIMEZONEs of the message `msg` for the
+  TZIDs that `cal` uses without defining them."
+  [cal msg]
+  (let [defined (set (keep #(when (= :vtimezone (:name %)) (value % :tzid)) (:components cal)))
+        used    (set (mapcat tzids (remove #(= :vtimezone (:name %)) (:components cal))))
+        added   (->> (:components msg)
+                     (filter #(and (= :vtimezone (:name %))
+                                   (used (value % :tzid))
+                                   (not (defined (value % :tzid)))))
+                     (reduce (fn [acc z] (cond-> acc (not-any? #(= (value z :tzid) (value % :tzid)) acc)
+                                           (conj z)))
+                             []))]
+    (cond-> cal
+      (seq added) (update :components #(into added %)))))
 
 (defn apply
   "The stored calendar `cal` with the message `msg` applied to it, by the
@@ -396,21 +527,27 @@
   - REPLY: the organizer's copy takes the attendee's PARTSTAT, unless the
     reply is to an older SEQUENCE. A reply to one instance adds an
     override for it.
-  - REQUEST, PUBLISH or ADD: the newer components (see newer?) replace
-    the stored ones, and a new master replaces all the stored components
-    with its UID.
-  - CANCEL: the cancelled components, with their STATUS, replace the
-    stored ones or are added.
+  - REQUEST or PUBLISH: the newer components (see newer?) replace the
+    stored ones, and a new master replaces all the stored components with
+    its UID.
+  - ADD: the stored recurring component gets each instance as an RDATE,
+    and the instance as an override.
+  - CANCEL: the stored components that it cancels get STATUS:CANCELLED,
+    and a cancelled instance becomes an override. A CANCEL that removes
+    attendees cancels the event for them.
 
-  Any other method leaves `cal` unchanged."
+  The VTIMEZONEs of `msg` come along for the TZIDs it brings. Any other
+  method leaves `cal` unchanged."
   [cal msg]
   (let [method (locale/upper-case (str (value msg :method)))
         ms     (filter #(scheduled (:name %)) (:components msg))]
-    (case method
-      "REPLY"                       (reduce apply-reply cal ms)
-      ("REQUEST" "PUBLISH" "ADD")   (reduce #(apply-update %1 msg %2) cal ms)
-      "CANCEL"                      (reduce apply-cancel cal ms)
-      cal)))
+    (-> (case method
+          "REPLY"               (reduce apply-reply cal ms)
+          ("REQUEST" "PUBLISH") (reduce #(apply-update %1 msg %2) cal ms)
+          "ADD"                 (reduce apply-add cal ms)
+          "CANCEL"              (reduce apply-cancel cal ms)
+          cal)
+        (with-timezones-of msg))))
 
 (defn- presence-errors
   "The errors of the counts `counts` of names against the `presences` of a
@@ -425,6 +562,12 @@
                    (and (= "0" p) (pos? n))             :not-allowed)]
         :when e]
     {:error (keyword (str (name e) "-" (name what))) :level :error :path path what k}))
+
+(def ^:private one-uid
+  "The methods and components whose messages RFC 5546, section 3, requires
+  to have the same UID in all their components."
+  #{["REQUEST" :vevent] ["REPLY" :vevent] ["CANCEL" :vevent] ["DECLINECOUNTER" :vevent]
+    ["REQUEST" :vtodo] ["REPLY" :vtodo] ["CANCEL" :vjournal]})
 
 ;; RFC 5546, section 3
 (defn validation-errors
@@ -454,9 +597,9 @@
                          (presence-errors (frequencies (map :name (:components c)))
                                           (select-keys (:component t) [:valarm]) path :component))]
               e)
-            ;; RFC 5546, section 3.2: all the components have the same UID
-            (when (< 1 (count (distinct (for [c (:components msg) :when (= k (:name c))]
-                                          (value c :uid)))))
+            (when (and (one-uid [method k])
+                       (< 1 (count (distinct (for [c (:components msg) :when (= k (:name c))]
+                                               (value c :uid))))))
               [(err :different-uids {})]))))))
 
 (defn- organizer-of
@@ -485,11 +628,22 @@
                  :when (attendee? a p)]
              [(identity-of cal c) (get-in p [:params :partstat] "NEEDS-ACTION")])))
 
+(defn- cancelled?
+  "Whether the calendar `cal`'s component without a RECURRENCE-ID, or else
+  its first, has STATUS:CANCELLED."
+  [cal]
+  (let [cs (filter #(scheduled (:name %)) (:components cal))
+        c  (or (first (filter #(nil? (prop % :recurrence-id)) cs)) (first cs))]
+    (= "CANCELLED" (some-> (value c :status) str locale/upper-case))))
+
+;; RFC 5546, section 3.2.5: an organizer who cancels the event sends a
+;; CANCEL, with the SEQUENCE that revise gives the cancelled version
 (defn- organizer-messages
   "The messages that the organizer sends when the calendar changes from
   `old` to `new`: a REQUEST to each attendee of `new` when anything
   changed or the attendee is new, and a CANCEL to each attendee that
-  `new` doesn't have, or to all of them when `new` is nil."
+  `new` doesn't have, or to all of them when `new` is nil or newly
+  cancelled."
   [old new organizer opts]
   (let [before  (if old (attendees-of old organizer) {})
         after   (if new (attendees-of new organizer) {})
@@ -500,31 +654,45 @@
                              (some #(let [o (get olds (identity-of new %))]
                                       (or (nil? o) (significant-change? o %)))
                                    (filter #(scheduled (:name %)) (:components new)))))]
-    (concat
-     (when (and new changed)
-       (let [msg (request new opts)]
-         (for [[k a] (sort after)]
-           {:method "REQUEST" :recipient a :calendar msg
-            :significant? (or sig? (not (contains? before k)))})))
-     (when old
-       (for [[k a] (sort before)
-             :when (not (contains? after k))]
-         {:method "CANCEL" :recipient a :calendar (cancel old (when new [a]) opts)
-          :significant? true})))))
+    (if (and new (cancelled? new) (not (and old (cancelled? old))))
+      (let [msg (message new "CANCEL" opts)]
+        (for [[_ a] (sort (merge before after))]
+          {:method "CANCEL" :recipient a :calendar msg :significant? true}))
+      (concat
+       (when (and new changed)
+         (let [msg (request new opts)]
+           (for [[k a] (sort after)]
+             {:method "REQUEST" :recipient a :calendar msg
+              :significant? (or sig? (not (contains? before k)))})))
+       (when old
+         (for [[k a] (sort before)
+               :when (not (contains? after k))]
+           {:method "CANCEL" :recipient a :calendar (cancel old (when new [a]) opts)
+            :significant? true}))))))
 
+;; RFC 5546, section 3.2.3: an attendee replies with a status they chose,
+;; so not with NEEDS-ACTION, which an organizer's update can set. A new
+;; override had the status of its recurring component.
 (defn- attendee-messages
   "The REPLY that the attendee `user` sends to the organizer when the
-  calendar changes from `old` to `new`, with the components where their
-  participation status changed, or declining them all when `new` is nil."
+  calendar changes from `old` to `new`, with the components where they
+  changed their participation status, or declining them all when `new` is
+  nil, unless they weren't invited, had declined or the event was
+  cancelled."
   [old new user organizer opts]
   (let [before (if old (partstats old user) {})]
     (if (nil? new)
-      [{:method "REPLY" :recipient organizer :calendar (reply old user "DECLINED" opts)
-        :significant? true}]
-      (let [changed (filter #(and (scheduled (:name %))
+      (when (and (seq before)
+                 (not-every? #{"DECLINED"} (vals before))
+                 (not (cancelled? old)))
+        [{:method "REPLY" :recipient organizer :calendar (reply old user "DECLINED" opts)
+          :significant? true}])
+      (let [after   (partstats new user)
+            prior   (fn [[k uid :as id]] (get before id (get before [k uid nil])))
+            changed (filter #(and (scheduled (:name %))
                                   (let [id (identity-of new %)
-                                        ps (get (partstats new user) id)]
-                                    (and ps (not= ps (get before id)))))
+                                        ps (get after id)]
+                                    (and ps (not= "NEEDS-ACTION" ps) (not= ps (prior id)))))
                             (:components new))]
         (when (seq changed)
           [{:method       "REPLY"
@@ -570,13 +738,16 @@
   (str "text/calendar; method=" (locale/upper-case (str (value msg :method))) "; charset=UTF-8"))
 
 ;; RFC 6047, section 2.2.1 and RFC 5546, section 1.3: an attendee sends
-;; a REPLY, a REFRESH or a COUNTER, and the organizer the others
+;; a REPLY, a REFRESH or a COUNTER, and the organizer the others. A COUNTER
+;; has all the attendees, so it tells who sent it only when it has one.
 (defn originator
   "The calendar user address that the message `msg` should come from: the
   ATTENDEE for a REPLY, a REFRESH or a COUNTER, and the ORGANIZER for any
-  other method."
+  other method. It's nil for a COUNTER with more than one attendee."
   [msg]
-  (let [c (some #(when (scheduled (:name %)) %) (:components msg))]
-    (if (#{"REPLY" "REFRESH" "COUNTER"} (locale/upper-case (str (value msg :method))))
-      (value c :attendee)
+  (let [c         (some #(when (scheduled (:name %)) %) (:components msg))
+        attendees (filter #(= :attendee (:name %)) (:properties c))]
+    (case (locale/upper-case (str (value msg :method)))
+      ("REPLY" "REFRESH") (value c :attendee)
+      "COUNTER"           (when (= 1 (count attendees)) (:value (first attendees)))
       (value c :organizer))))

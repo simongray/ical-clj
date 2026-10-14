@@ -476,6 +476,22 @@
                 sub-daily? (recur (skip-to-time rule start k))
                 :else      (recur (inc k))))))))))
 
+;; One period before, since a YEARLY period with BYWEEKNO, or a week, can
+;; start before the year or the week of a time
+(defn- first-period
+  "A period of the normalized `rule` from the local time `start` that
+  comes before any period with a time on or after the local time `from`."
+  [{:keys [freq interval year month day]} start from]
+  (let [before #(max 0 (dec (civil/floor-div % interval)))
+        [y m]  (civil/civil-from-seconds from)
+        days   (- (civil/floor-div from 86400) day)]
+    (case freq
+      "YEARLY"  (before (- y year))
+      "MONTHLY" (before (- (+ (* 12 y) m) (+ (* 12 year) month)))
+      "WEEKLY"  (before (civil/floor-div days 7))
+      "DAILY"   (before days)
+      (before (civil/floor-div (- from start) (units freq))))))
+
 ;; A period can hold a time that the one before it held too, when SKIP
 ;; moves a day across a month's end or BYSECOND has 60, and those are left
 ;; out
@@ -484,40 +500,55 @@
   time `start`, in order, as a lazy sequence that ends where the rule
   does, or never, and at the end of the year 9999 at the latest. It
   ignores COUNT and UNTIL, and leaves out `start` unless the rule
-  generates it."
-  [rule start]
-  (letfn [(step [k from]
-            (lazy-seq
-             (when-let [[k xs] (next-period rule k start from)]
-               (concat xs (lazy-seq (step (inc k) (inc (last xs))))))))]
-    (when (or (not (units (:freq rule))) (reachable? rule start))
-      (take-while #(<= % last-second) (step 0 start)))))
+  generates it. Given the local time `from`, it starts there, without
+  going through the periods before it."
+  ([rule start]
+   (local-times rule start start))
+  ([rule start from]
+   (letfn [(step [k from]
+             (lazy-seq
+              (when-let [[k xs] (next-period rule k start from)]
+                (concat xs (lazy-seq (step (inc k) (inc (last xs))))))))]
+     (when (or (not (units (:freq rule))) (reachable? rule start))
+       (take-while #(<= % last-second)
+                   (if (> from start)
+                     (step (first-period rule start from) from)
+                     (step 0 start)))))))
 
 ;; RFC 5545, section 3.8.5.3: "The "DTSTART" property defines the first
 ;; instance in the recurrence set", and section 3.3.10: "The "DTSTART"
-;; property value always counts as the first occurrence."
+;; property value always counts as the first occurrence." COUNT counts
+;; from DTSTART, so a rule with it starts there.
 (defn rule-times
   "The local times of the recurrence `rule`, as the values namespace
   parses it, from the local time `start`. They're `start` itself, even
   when the rule doesn't generate it, and then the times the rule
   generates until `past?` is true of one, at most COUNT in all (and at
-  least `start`). A `date?` start is a date."
-  [rule start date? past?]
-  (let [more (lazy-seq
-              (let [xs (cond->> (local-times (normalize rule start date?) start)
-                         past? (take-while (complement past?)))]
-                (if (= start (first xs)) (rest xs) xs)))]
-    (cond->> (cons start more)
-      (:count rule) (take (max 1 (:count rule))))))
+  least `start`). A `date?` start is a date. Given the local time `from`,
+  a rule without COUNT can leave out the times before it, but `start`."
+  ([rule start date? past?]
+   (rule-times rule start date? past? start))
+  ([rule start date? past? from]
+   (let [from (if (:count rule) start (max start from))
+         more (lazy-seq
+               (let [xs (cond->> (local-times (normalize rule start date?) start from)
+                          past? (take-while (complement past?)))]
+                 (if (= start (first xs)) (rest xs) xs)))]
+     (cond->> (cons start more)
+       (:count rule) (take (max 1 (:count rule)))))))
 
 ;; RFC 2445, section 4.8.5.2: an EXRULE excludes the times it generates,
 ;; which needn't include DTSTART
 (defn exclusion-times
   "The local times that the recurrence `rule` generates from the local
   time `start`, as an EXRULE: without `start` unless the rule generates
-  it, until `past?` is true of one, and at most COUNT."
-  [rule start date? past?]
-  (lazy-seq
-   (cond->> (local-times (normalize rule start date?) start)
-     past?         (take-while (complement past?))
-     (:count rule) (take (:count rule)))))
+  it, until `past?` is true of one, and at most COUNT. Given the local
+  time `from`, a rule without COUNT can leave out the times before it."
+  ([rule start date? past?]
+   (exclusion-times rule start date? past? start))
+  ([rule start date? past? from]
+   (let [from (if (:count rule) start (max start from))]
+     (lazy-seq
+      (cond->> (local-times (normalize rule start date?) start from)
+        past?         (take-while (complement past?))
+        (:count rule) (take (:count rule)))))))

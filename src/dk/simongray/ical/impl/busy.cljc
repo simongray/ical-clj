@@ -35,21 +35,35 @@
         e (min e to)]
     (when (< s e) [s e])))
 
+(defn- floating-or-utc
+  "The `opts` with UTC as the zone :floating, unless they give one."
+  [opts]
+  (update opts :floating #(or % {:tzid "UTC" :offset 0})))
+
 (defn- event-periods
   "The busy periods of the events of the calendar `cal` between the
   instants `from` and `to`, each a pair of its type and its period."
   [cal from to opts]
-  (let [utc (assoc opts :floating {:tzid "UTC" :offset 0})]
+  (let [fopts (floating-or-utc opts)]
     (for [c     (:components (recurrence/expand cal from to opts))
           :when (= :vevent (:name c))
           :let  [type (fbtype c)
                  s    (recurrence/instant-of cal (some #(when (= :dtstart (:name %)) %)
                                                        (:properties c))
-                                             utc)
-                 e    (some-> (recurrence/end cal c opts) (#(recurrence/instant-of cal % utc)))
+                                             fopts)
+                 e    (some-> (recurrence/end cal c opts) (#(recurrence/instant-of cal % fopts)))
                  p    (when (and type s e) (clip s e from to))]
           :when p]
       [type p])))
+
+;; RFC 5545, section 3.2.9: an FBTYPE that the application doesn't know
+;; counts as BUSY
+(defn- known-fbtype
+  "The FBTYPE `s` in upper case, or BUSY when it's one RFC 5545 doesn't
+  define."
+  [s]
+  (let [t (locale/upper-case (str s))]
+    (if (#{"FREE" "BUSY" "BUSY-UNAVAILABLE" "BUSY-TENTATIVE"} t) t "BUSY")))
 
 ;; RFC 5545, section 3.8.2.6: FREEBUSY periods are in UTC, and FBTYPE is
 ;; BUSY by default
@@ -62,7 +76,7 @@
         :when (= :vfreebusy (:name c))
         p     (:properties c)
         :when (and (= :freebusy (:name p)) (not= :unknown (:type p)))
-        :let  [type (locale/upper-case (str (get-in p [:params :fbtype] "BUSY")))]
+        :let  [type (known-fbtype (get-in p [:params :fbtype] "BUSY"))]
         :when (not= "FREE" type)
         v     (:value p)
         :let  [s (civil/seconds (:start v))
@@ -74,44 +88,53 @@
         :when p]
     [type p]))
 
+;; The busy time of availability is a timeline: a sorted map of each
+;; instant where the type of time changes to the type from then on, nil
+;; for free. Painting a period changes the entries in it, so each paint
+;; takes logarithmic time.
+(defn- type-at
+  "The type of time of the `timeline` at the instant `t`."
+  [timeline t]
+  (some-> (first (rsubseq timeline <= t)) val))
+
 (defn- paint
-  "The `segments`, pairs of a period and its type (nil for free) that
-  cover a span in order, with the period from `s` to `e` given the type
-  `type`."
-  [segments s e type]
-  (vec (mapcat (fn [[[a b] t]]
-                 (if (or (<= b s) (<= e a))
-                   [[[a b] t]]
-                   (remove (fn [[[x y]]] (>= x y))
-                           [[[a (max a s)] t]
-                            [[(max a s) (min b e)] type]
-                            [[(min b e) b] t]])))
-               segments)))
+  "The `timeline` with the period from `s` to `e` given the type `type`."
+  [timeline s e type]
+  (let [after (type-at timeline e)]
+    (-> (reduce dissoc timeline (map key (subseq timeline >= s < e)))
+        (assoc s type e after))))
+
+;; RFC 7953, section 3.2: a BUSYTYPE that the application doesn't know
+;; counts as BUSY-UNAVAILABLE, the default
+(defn- busytype
+  "The BUSYTYPE of the VAVAILABILITY `c`, in upper case."
+  [c]
+  (let [t (locale/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
+    (if (#{"BUSY" "BUSY-UNAVAILABLE" "BUSY-TENTATIVE"} t) t "BUSY-UNAVAILABLE")))
 
 ;; RFC 7953, section 4: absent and 0 are the lowest, then 9 up to 1
 (defn- priority-rank
   "The rank of the priority of the VAVAILABILITY `c`, lowest first, with
   the busy types of equal priorities ordered so that BUSY wins."
   [c]
-  (let [p (value c :priority)
-        t (locale/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
+  (let [p (value c :priority)]
     [(if (and (number? p) (pos? p)) (- 10 p) 0)
-     (get {"BUSY-TENTATIVE" 0 "BUSY-UNAVAILABLE" 1 "BUSY" 2} t 1)]))
+     (get {"BUSY-TENTATIVE" 0 "BUSY-UNAVAILABLE" 1 "BUSY" 2} (busytype c))]))
 
 (defn- available-periods
   "The periods of the instances of the AVAILABLE components of the
   VAVAILABILITY `c` in the calendar `cal` between the instants `from` and
   `to`."
   [cal c from to opts]
-  (let [utc   (assoc opts :floating {:tzid "UTC" :offset 0})
+  (let [fopts (floating-or-utc opts)
         inner (assoc cal :components (concat (filter #(= :vtimezone (:name %)) (:components cal))
                                              (:components c)))]
     (for [a     (:components (recurrence/expand inner from to opts))
           :when (= :available (:name a))
           :let  [s (recurrence/instant-of inner (some #(when (= :dtstart (:name %)) %)
                                                       (:properties a))
-                                          utc)
-                 e (some-> (recurrence/end inner a opts) (#(recurrence/instant-of inner % utc)))]
+                                          fopts)
+                 e (some-> (recurrence/end inner a opts) (#(recurrence/instant-of inner % fopts)))]
           :when (and s e)]
       [s e])))
 
@@ -123,25 +146,27 @@
   `cal` give between the instants `from` and `to`, each a pair of its type
   and its period."
   [cal from to opts]
-  (let [utc (assoc opts :floating {:tzid "UTC" :offset 0})
-        prop #(some (fn [p] (when (= %2 (:name p)) p)) (:properties %1))]
-    (->> (sort-by priority-rank (filter #(= :vavailability (:name %)) (:components cal)))
-         (reduce (fn [segments c]
-                   (let [s    (or (some-> (prop c :dtstart) (#(recurrence/instant-of cal % utc))) from)
-                         e    (or (when (or (prop c :dtend) (prop c :duration))
-                                    (some-> (recurrence/end cal c opts) (#(recurrence/instant-of cal % utc))))
-                                  to)
-                         type (locale/upper-case (str (or (value c :busytype) "BUSY-UNAVAILABLE")))]
-                     (if-let [[s e] (clip s e from to)]
-                       (reduce (fn [segments [a b]]
-                                 (if-let [[a b] (clip a b s e)]
-                                   (paint segments a b nil)
-                                   segments))
-                               (paint segments s e type)
-                               (available-periods cal c from to opts))
-                       segments)))
-                 [[[from to] nil]])
-         (keep (fn [[p t]] (when t [t p]))))))
+  (let [fopts    (floating-or-utc opts)
+        prop     #(some (fn [p] (when (= %2 (:name p)) p)) (:properties %1))
+        timeline (reduce (fn [timeline c]
+                           (let [s (or (some-> (prop c :dtstart) (#(recurrence/instant-of cal % fopts))) from)
+                                 e (or (when (or (prop c :dtend) (prop c :duration))
+                                         (some-> (recurrence/end cal c opts)
+                                                 (#(recurrence/instant-of cal % fopts))))
+                                       to)]
+                             (if-let [[s e] (clip s e from to)]
+                               (reduce (fn [timeline [a b]]
+                                         (if-let [[a b] (clip a b s e)]
+                                           (paint timeline a b nil)
+                                           timeline))
+                                       (paint timeline s e (busytype c))
+                                       (available-periods cal c from to opts))
+                               timeline)))
+                         (sorted-map from nil to nil)
+                         (sort-by priority-rank (filter #(= :vavailability (:name %)) (:components cal))))]
+    (for [[[a t] [b]] (partition 2 1 timeline)
+          :when       (and t (< a b))]
+      [t [a b]])))
 
 (defn- coalesce
   "The `periods` with those that overlap or touch merged, in order."

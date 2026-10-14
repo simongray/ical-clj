@@ -144,6 +144,86 @@
         (is (= [] (itip/validation-errors (:calendar msg))))
         (is (= "ACCEPTED" (get-in (ical/property (event (:calendar msg)) :attendee) [:params :partstat])))))))
 
+(defn- starts
+  "The DTSTARTs of the instances of the calendar `cal` in the last quarter
+  of 2026."
+  [cal]
+  (mapv #(ical/value % :dtstart)
+        (filter #(= :vevent (:name %))
+                (:components (ical/expand cal #inst "2026-10-01T00:00:00Z" #inst "2027-01-01T00:00:00Z")))))
+
+(defn- with-attendee
+  "The calendar `cal` with only the attendees whose addresses `keep?` is
+  true of."
+  [cal keep?]
+  (update-in cal [:components 0 :properties]
+             #(vec (remove (fn [p] (and (= :attendee (:name p)) (not (keep? (:value p))))) %))))
+
+(deftest scheduling-edge-cases
+  (testing "an ADD adds an instance and keeps the series"
+    (let [extra (-> (update-in calendar [:components 0 :properties]
+                               #(vec (remove (fn [p] (= :rrule (:name p))) %)))
+                    (update-in [:components 0 :properties 3] assoc :value "2026-10-26T19:00:00")
+                    (update-in [:components 0 :properties 4] assoc :value "2026-10-26T21:00:00"))]
+      (is (= ["2026-10-12T19:00:00" "2026-10-26T19:00:00" "2026-11-09T19:00:00" "2026-12-14T19:00:00"]
+             (starts (itip/apply calendar (itip/add extra {:now now})))))))
+  (testing "a CANCEL that removes an attendee cancels their copy, which keeps what it held"
+    (let [copy (itip/apply calendar (itip/cancel calendar ["mailto:anna@gf.example"] {:now now}))]
+      (is (= "CANCELLED" (ical/value (event copy) :status)))
+      (is (= "Bestyrelsesmøde" (ical/value (event copy) :summary)))))
+  (testing "a CANCEL of one instance makes it a cancelled override"
+    (let [msg  (ical/parse (crlf "BEGIN:VCALENDAR" "METHOD:CANCEL" "BEGIN:VEVENT" "UID:gf-1@gf.example"
+                                 "DTSTAMP:20261003T090000Z" "SEQUENCE:1"
+                                 "RECURRENCE-ID;TZID=Europe/Copenhagen:20261109T190000"
+                                 "END:VEVENT" "END:VCALENDAR"))
+          copy (itip/apply calendar msg)]
+      (is (= "CANCELLED" (ical/value (last (ical/components copy :vevent)) :status)))))
+  (testing "a removed attendee who's invited again gets the event back"
+    (let [revised (itip/revise calendar (with-attendee calendar #(not= % "mailto:anna@gf.example")))
+          [_ c]   (itip/messages calendar revised "mailto:board@gf.example" {:now now})
+          anna    (itip/apply calendar (:calendar c))
+          back    (itip/revise revised calendar)
+          request (some #(when (= "mailto:anna@gf.example" (:recipient %)) (:calendar %))
+                        (itip/messages revised back "mailto:board@gf.example"
+                                       {:now #inst "2026-10-03T10:00:00Z"}))]
+      (is (= [1 1] [(ical/value (event revised) :sequence) (ical/value (event (:calendar c)) :sequence)]))
+      (is (nil? (ical/value (event (itip/apply anna request)) :status)))))
+  (testing "a message's VTIMEZONEs come along"
+    (let [msg (ical/parse (crlf "BEGIN:VCALENDAR" "METHOD:REQUEST"
+                                "BEGIN:VTIMEZONE" "TZID:Customized Time Zone" "BEGIN:STANDARD"
+                                "DTSTART:16010101T000000" "TZOFFSETFROM:+0100" "TZOFFSETTO:+0100"
+                                "END:STANDARD" "END:VTIMEZONE"
+                                "BEGIN:VEVENT" "UID:x" "DTSTAMP:20261001T090000Z"
+                                "DTSTART;TZID=Customized Time Zone:20261015T180000" "END:VEVENT"
+                                "END:VCALENDAR"))]
+      (is (= [:vtimezone :vevent]
+             (mapv :name (:components (itip/apply {:name :vcalendar :components []} msg)))))))
+  (testing "a published feed can have several UIDs"
+    (is (not-any? #(= :different-uids (:error %))
+                  (itip/validation-errors
+                   (itip/publish (update calendar :components conj
+                                         (assoc-in (event calendar) [:properties 0 :value] "other"))
+                                 {:now now})))))
+  (testing "a moved instance gets a higher SEQUENCE"
+    (let [moved (-> (event calendar)
+                    (update :properties conj {:name :recurrence-id :params {:tzid "Europe/Copenhagen"}
+                                              :value "2026-11-09T19:00:00"})
+                    (update :properties #(vec (remove (fn [p] (= :rrule (:name p))) %)))
+                    (assoc-in [:properties 3 :value] "2026-11-10T19:00:00"))]
+      (is (= [0 1] (mapv #(ical/value % :sequence)
+                         (ical/components (itip/revise calendar (update calendar :components conj moved))
+                                          :vevent))))))
+  (testing "the organizer who cancels the event sends CANCELs"
+    (is (= ["CANCEL" "CANCEL"]
+           (mapv :method (itip/messages calendar
+                                        (update-in calendar [:components 0 :properties] conj
+                                                   {:name :status :value "CANCELLED"})
+                                        "mailto:board@gf.example")))))
+  (testing "someone who wasn't invited sends nothing when they delete the event"
+    (is (= [] (itip/messages (itip/publish calendar {:now now}) nil "mailto:stranger@gf.example"))))
+  (testing "a COUNTER doesn't tell who sent it when it has several attendees"
+    (is (nil? (itip/originator (itip/counter calendar {:now now}))))))
+
 (deftest newer
   (let [v #(hash-map :properties [{:name :sequence :value %1} {:name :dtstamp :value %2}])]
     (is (itip/newer? (v 1 "2026-10-01T00:00:00Z") (v 0 "2026-10-02T00:00:00Z")))

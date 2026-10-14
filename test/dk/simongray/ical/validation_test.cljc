@@ -24,7 +24,40 @@
   (is (ical/valid? (apply crlf (concat ["BEGIN:VCALENDAR" "VERSION:2.0" "PRODID:-//t//t//EN"
                                         "BEGIN:VEVENT"]
                                        event
-                                       ["DTSTART:20261012T100000Z" "END:VEVENT" "END:VCALENDAR"])))))
+                                       ["DTSTART:20261012T100000Z" "END:VEVENT" "END:VCALENDAR"]))))
+  (testing "what isn't a calendar isn't valid"
+    (is (not-any? ical/valid? ["" nil {} (crlf "BEGIN:VEVENT" "UID:a" "DTSTAMP:20261001T090000Z"
+                                               "END:VEVENT")]))))
+
+(deftest more-rules
+  (testing "where components can be"
+    (is (= [:misplaced-component]
+           (errors :error "BEGIN:VALARM" "ACTION:DISPLAY" "TRIGGER:-PT15M" "DESCRIPTION:x" "END:VALARM"))))
+  (testing "what must be in UTC, and what must be local"
+    (is (= [:not-utc] (apply errors :error (concat ["BEGIN:VEVENT"] event
+                                                   ["DTSTART:20261012T100000Z" "CREATED:20261001T090000"
+                                                    "END:VEVENT"]))))
+    (is (= [:tzid-not-allowed] (apply errors :error (concat ["BEGIN:VEVENT"] event
+                                                            ["DTSTART;TZID=Europe/Copenhagen:20261012T100000Z"
+                                                             "END:VEVENT"]))))
+    (is (= [:not-local] (errors :error "BEGIN:VTIMEZONE" "TZID:A" "BEGIN:STANDARD" "DTSTART:19700101T000000Z"
+                                "TZOFFSETFROM:+0100" "TZOFFSETTO:+0100" "END:STANDARD" "END:VTIMEZONE"))))
+  (testing "a VTIMEZONE's UNTIL is in UTC"
+    (is (= [] (errors :error "BEGIN:VTIMEZONE" "TZID:A" "BEGIN:STANDARD" "DTSTART:19671029T020000"
+                      "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU;UNTIL=20061029T060000Z"
+                      "TZOFFSETFROM:-0400" "TZOFFSETTO:-0500" "END:STANDARD" "END:VTIMEZONE"))))
+  (testing "a RECURRENCE-ID of the type of DTSTART, and numbers in range"
+    (is (= [:mismatched-types :property-out-of-range]
+           (apply errors :error (concat ["BEGIN:VEVENT"] event
+                                        ["DTSTART:20261012T100000Z" "RECURRENCE-ID;VALUE=DATE:20261012"
+                                         "PRIORITY:10" "END:VEVENT"])))))
+  (testing "a DURATION needs a DTSTART, and a TZID one VTIMEZONE"
+    (is (= [:missing-property] (apply errors :error (concat ["BEGIN:VTODO"] event ["DURATION:PT1H" "END:VTODO"]))))
+    (is (= [:repeated-vtimezone]
+           (apply errors :error (for [_ (range 2)
+                                      line ["BEGIN:VTIMEZONE" "TZID:A" "BEGIN:STANDARD" "DTSTART:19700101T000000"
+                                            "TZOFFSETFROM:+0100" "TZOFFSETTO:+0100" "END:STANDARD" "END:VTIMEZONE"]]
+                                  line))))))
 
 (deftest properties
   (testing "required, repeated and conflicting"
