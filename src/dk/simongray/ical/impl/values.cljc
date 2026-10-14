@@ -1,5 +1,5 @@
 (ns ^:no-doc dk.simongray.ical.impl.values
-  "The value types of RFC 5545, section 3.3, read from their text into the
+  "The value types of RFC 5545, section 3.3, parsed from their text into the
   forms of jCal (RFC 7265, section 3.6) and written back.
 
   A date is \"2026-10-12\", a date-time \"2026-10-12T19:00:00\" (with a Z
@@ -20,7 +20,7 @@
 
 ;; RFC 5545, section 3.3.4
 (defn read-date
-  "The date written as `s`, e.g. 20261012, as 2026-10-12."
+  "The date in the text `s`, e.g. 20261012, as 2026-10-12."
   [s]
   (if-let [[_ y m d] (re-matches #"(\d{4})(\d{2})(\d{2})" s)]
     (if (civil/valid-date? (digits y) (digits m) (digits d))
@@ -35,7 +35,7 @@
 
 ;; RFC 5545, section 3.3.12
 (defn read-time
-  "The time written as `s`, e.g. 190000 or 170000Z, as 19:00:00 or
+  "The time in the text `s`, e.g. 190000 or 170000Z, as 19:00:00 or
   17:00:00Z."
   [s]
   (if-let [[_ hh mm ss z] (re-matches #"(\d{2})(\d{2})(\d{2})([Zz]?)" s)]
@@ -51,7 +51,7 @@
 
 ;; RFC 5545, section 3.3.5
 (defn read-date-time
-  "The date-time written as `s`, e.g. 20261012T190000, as
+  "The date-time in the text `s`, e.g. 20261012T190000, as
   2026-10-12T19:00:00."
   [s]
   (let [[date time] (str/split s #"[Tt]" 2)]
@@ -70,7 +70,7 @@
 
 ;; RFC 5545, section 3.3.14
 (defn read-utc-offset
-  "The UTC offset written as `s`, e.g. +0200, as +02:00."
+  "The UTC offset in the text `s`, e.g. +0200, as +02:00."
   [s]
   (if-let [[_ sign hh mm ss] (re-matches #"([+-])(\d{2})(\d{2})(\d{2})?" s)]
     (if (and (<= (digits hh) 23) (<= (digits mm) 59)
@@ -90,7 +90,7 @@
   #"[+-]?P(?:\d+W|(?:\d+D)?(?:T(?:\d+H(?:\d+M(?:\d+S)?)?|\d+M(?:\d+S)?|\d+S))?)")
 
 (defn read-duration
-  "The duration written as `s`, e.g. PT2H, in upper case."
+  "The duration in the text `s`, e.g. PT2H, in upper case."
   [s]
   (let [s (str/upper-case s)]
     (if (and (re-matches duration-pattern s) (not (re-matches #"[+-]?P" s)))
@@ -99,7 +99,7 @@
 
 ;; RFC 5545, section 3.3.9
 (defn read-period
-  "The period written as `s`, e.g. 19970101T180000Z/PT5H30M, as a map of
+  "The period in the text `s`, e.g. 19970101T180000Z/PT5H30M, as a map of
   :start and :end or :duration."
   [s]
   (let [[start end] (str/split s #"/" 2)
@@ -123,7 +123,7 @@
 
 ;; RFC 5545, section 3.3.11
 (defn read-text
-  "The text written as `s`, unescaped. A backslash before any character
+  "The text value `s`, unescaped. A backslash before any character
   other than those that RFC 5545 escapes is dropped."
   [s]
   (if (str/includes? s "\\")
@@ -145,7 +145,7 @@
 
 ;; RFC 5545, section 3.3.8
 (defn read-integer
-  "The integer written as `s`."
+  "The integer in the text `s`."
   [s]
   (if (re-matches #"[+-]?\d{1,18}" s)
     (digits (str/replace s "+" ""))
@@ -153,7 +153,7 @@
 
 ;; RFC 5545, section 3.3.7
 (defn read-float
-  "The float written as `s`."
+  "The float in the text `s`."
   [s]
   (if (re-matches #"[+-]?\d+(?:\.\d+)?" s)
     #?(:clj (Double/parseDouble s) :cljs (js/parseFloat s))
@@ -183,7 +183,7 @@
 
 ;; RFC 5545, section 3.3.2
 (defn read-boolean
-  "The boolean written as `s`."
+  "The boolean in the text `s`."
   [s]
   (case (str/upper-case s)
     "TRUE"  true
@@ -211,7 +211,7 @@
   (mapv str/trim (str/split s #"," -1)))
 
 (defn- read-numbers
-  "The comma-separated signed numbers written as `s`, or ::invalid. Month
+  "The comma-separated signed numbers in the text `s`, or ::invalid. Month
   numbers can end with the L of a leap month (RFC 7529), which keeps them
   as text."
   [s leap?]
@@ -221,7 +221,7 @@
       ::invalid)))
 
 (defn- read-rule-part
-  "The value of the rule part `k` written as `s`, or ::invalid."
+  "The value of the rule part `k` in the text `s`, or ::invalid."
   [k s]
   (case k
     :freq     (let [f (str/upper-case s)] (if (freqs f) f ::invalid))
@@ -243,10 +243,10 @@
     s))
 
 (defn read-recur
-  "The recurrence rule written as `s`, e.g. FREQ=WEEKLY;BYDAY=MO,WE, as a
+  "The recurrence rule in the text `s`, e.g. FREQ=WEEKLY;BYDAY=MO,WE, as a
   map of its parts by lower-case keyword, e.g. {:freq \"WEEKLY\" :byday
   [\"MO\" \"WE\"]}. It's ::invalid without a FREQ, or with a part that
-  doesn't read or comes twice."
+  doesn't parse or appears twice."
   [s]
   (let [rule (reduce (fn [rule part]
                        (let [[k v] (str/split part #"=" 2)
@@ -279,7 +279,7 @@
          (str/join ";"))))
 
 (defn read-value
-  "The value of the type `type` written as `s`, or ::invalid."
+  "The value of the type `type` in the text `s`, or ::invalid."
   [type s]
   (case type
     :date       (read-date s)

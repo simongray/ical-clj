@@ -1,12 +1,12 @@
 (ns dk.simongray.ical.rrule
-  "Recurrence rules (RFC 5545, section 3.3.10) on their own: read,
-  written and expanded.
+  "Parse, write and expand recurrence rules (RFC 5545, section 3.3.10) on
+  their own.
 
-  A rule is a map of its parts by lower-case keyword, as a property's
-  value holds it, e.g. {:freq \"MONTHLY\" :byday [\"2MO\"]}. FREQ, WKST
-  and BYDAY are upper-case text, UNTIL a date or a date-time in the form
-  of jCal, COUNT and INTERVAL numbers, and the other BYxxx parts vectors of
-  numbers."
+  A rule is the map that an RRULE property holds as its value, with its
+  parts by lower-case keyword, e.g. {:freq \"MONTHLY\" :byday [\"2MO\"]}.
+  FREQ, WKST and BYDAY are upper-case strings, and UNTIL is a date or a
+  date-time. COUNT and INTERVAL are numbers, and the other BYxxx parts
+  are vectors of numbers."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.expansion :as expansion]
@@ -14,8 +14,8 @@
             [dk.simongray.ical.impl.zones :as zones]))
 
 (defn parse
-  "The recurrence rule written as `s`, or nil when it isn't one: it has no
-  FREQ, or a part that doesn't read or comes twice.
+  "The recurrence rule in the text `s`, or nil when it isn't one: when it
+  has no FREQ, or a part that doesn't parse or appears twice.
 
       (parse \"FREQ=WEEKLY;BYDAY=MO,WE\")
       ;; => {:freq \"WEEKLY\" :byday [\"MO\" \"WE\"]}"
@@ -31,8 +31,8 @@
 ;; RFC 7529, section 3: a rule in another calendar than the Gregorian one
 ;; needs that calendar, and SKIP needs RSCALE
 (defn expandable?
-  "Whether the library can expand the recurrence `rule`: it has no RSCALE
-  other than GREGORIAN, and no SKIP other than OMIT."
+  "Whether the library can expand the recurrence `rule`. It can unless the
+  rule has an RSCALE other than GREGORIAN, or a SKIP other than OMIT."
   [rule]
   (and (map? rule)
        (contains? values/freqs (:freq rule))
@@ -48,8 +48,8 @@
 ;; in UTC, and floating when DTSTART is (erratum 4414). A date as UNTIL
 ;; for a date-time DTSTART, which some clients write, ends with its day.
 (defn- past-until
-  "A function that tells whether a local time of the rule from `start` in
-  the `zone` is past the rule's `until`, or nil without one."
+  "A predicate of whether a local time of a rule from `start` in the `zone`
+  is past the rule's `until`, or nil without one."
   [until start zone]
   (when until
     (let [utc?  (str/ends-with? until "Z")
@@ -60,14 +60,14 @@
         :else                                  #(> % limit)))))
 
 (defn occurrences
-  "The recurrence instances that the `rule` makes from `start`, a date or a
-  date-time in the form of jCal, as a lazy sequence of the same form, in
-  order. It's nil when the rule can't be expanded (see expandable?).
+  "The instances that the `rule` generates from `start`, a date or a
+  date-time, as a lazy sequence of dates or date-times in order. It's nil
+  for a rule that the library can't expand (see expandable?).
 
-  `start` is always the first instance, as section 3.8.5.3 says, even when
-  the rule wouldn't make it, and COUNT counts it. The `zone` of a local
-  `start` (as tz/zone gives it) is needed only to compare it with an UNTIL
-  in UTC. Without one, a local `start` is compared as if it were in UTC.
+  The first instance is always `start`, as section 3.8.5.3 says, even
+  when the rule wouldn't generate it, and COUNT counts it. The `zone`
+  (from tz/zone) is only needed to compare a local `start` with an UNTIL
+  in UTC. Without it, such a `start` is compared as if it were in UTC.
 
       (take 3 (occurrences {:freq \"MONTHLY\" :byday [\"-1FR\"]}
                            \"2026-01-30T18:00:00\"))

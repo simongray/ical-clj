@@ -1,6 +1,6 @@
 (ns ^:no-doc dk.simongray.ical.impl.serializer
-  "Components written as the text of an iCalendar stream, by RFC 5545,
-  sections 3.1 to 3.6, as folded content lines that end with CRLF."
+  "Write components as the text of an iCalendar stream, by RFC 5545,
+  sections 3.1 to 3.6: folded content lines that end with CRLF."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.lines :as lines]
             [dk.simongray.ical.impl.registry :as registry]

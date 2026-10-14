@@ -1,30 +1,29 @@
 ical-clj
 ========
 
-This library reads and writes [iCalendar](https://www.rfc-editor.org/rfc/rfc5545),
-the format of .ics files, calendar feeds and meeting invitations, in
-Clojure and ClojureScript. A calendar is plain data, and the library
-expands recurring events in their time zones and builds the scheduling
-messages that invitations and replies are made of.
+This library reads and writes [iCalendar](https://www.rfc-editor.org/rfc/rfc5545)
+in Clojure and ClojureScript. It's the format of .ics files, calendar
+feeds and meeting invitations. A calendar is plain data, and the library
+expands its recurring events in their own time zones and builds
+invitations and replies.
 
-- **Nothing lost.** A calendar that you write back has every component,
-  property and parameter it came with, in order, including those of
-  other vendors. A value that doesn't read keeps its text.
-- **Recurrence by the RFC.** Every part of a recurrence rule, with extra
-  and excluded dates and moved instances, in the event's own time zone.
-  It passes the examples of RFC 5545 and the recurrence tests of libical.
-- **Time zones from the platform.** IANA zones come from the database of
-  the JVM or the JavaScript engine, Outlook's Windows zone names are
-  mapped by [CLDR](https://cldr.unicode.org/), and a file's own
-  definitions fill in the rest.
-- **Validation errors as data.** The parser is lenient with what real
-  calendars contain, and it can tell you what it forgave.
+- **Nothing lost.** When you write a calendar back, it has every
+  component, property and parameter it came with, in order, other
+  vendors' included. A value that doesn't parse keeps its original text.
+- **Recurrence by the RFC.** The library expands every part of a
+  recurrence rule in the event's own time zone, with added and excluded
+  dates and moved instances. It passes the examples of RFC 5545 and
+  libical's recurrence tests.
+- **Time zones from the platform.** The JVM or the JavaScript engine has
+  the IANA zones, and [CLDR](https://cldr.unicode.org/) maps Outlook's
+  Windows zone names onto them. A file's own definitions cover the rest.
+- **Validation errors as data.** The parser forgives what real calendars
+  get wrong, and can tell you what it forgave.
 - **The same results everywhere.** One codebase runs on the JVM, in Node
   and in browsers, with no dependencies.
 
-> The design and the reasons for it are in the [proposal](doc/proposal.md).
-> Like Simon Gray's other libraries, it was developed with assistance
-> from frontier LLMs.
+> The [proposal](doc/proposal.md) explains the design and the reasons for
+> it. The library was developed with assistance from frontier LLMs.
 
 Getting started
 ---------------
@@ -43,8 +42,7 @@ In shadow-cljs a Git dependency only works through `deps.edn`, so set
 Reading and writing
 -------------------
 
-Parse a calendar with `ical/parse` and write it back with
-`ical/serialize`:
+Parse a calendar with `ical/parse`:
 
 ```clojure
 (require '[dk.simongray.ical :as ical])
@@ -72,24 +70,25 @@ END:VCALENDAR\r
 ```
 
 A component is a map of its `:name`, its `:properties` and its
-`:components`. A property has a `:name`, its `:params` and a `:value` in
-the form that [jCal](https://www.rfc-editor.org/rfc/rfc7265) gives it: a
-date-time is a string like the one above, a recurrence rule a map of its
-parts, text is unescaped, and numbers are numbers. Get a value with
-`ical/value`:
+`:components`. A property has a `:name`, its `:params` and a `:value`.
+Values take the forms of [jCal](https://www.rfc-editor.org/rfc/rfc7265):
+a date-time is a string like the one above and a recurrence rule is a
+map of its parts. Text comes unescaped, and numbers are numbers. Get a
+value with `ical/value`:
 
 ```clojure
 (ical/value event :rrule)
 ;; => {:freq "MONTHLY", :byday ["2MO"]}
 ```
 
-For a stream with several calendars, use `ical/parse-all`.
+To turn a calendar back into text, use `ical/serialize`. For a stream of
+several calendars, use `ical/parse-all`.
 
 Recurrence
 ----------
 
-Get the instances of an event with `ical/occurrences`, as a lazy
-sequence of events with a RECURRENCE-ID each:
+To list the instances of a recurring event, call `ical/occurrences`. It
+returns a lazy sequence of events, each with a RECURRENCE-ID:
 
 ```clojure
 (->> (ical/occurrences cal event)
@@ -98,12 +97,12 @@ sequence of events with a RECURRENCE-ID each:
 ;; => ("2026-10-12T19:00:00" "2026-11-09T19:00:00" "2026-12-14T19:00:00")
 ```
 
-An event that another one overrides by its RECURRENCE-ID is replaced by
-it, and RANGE=THISANDFUTURE moves the instances after it too. To get all
-the instances between two dates, as a calendar feed or a CalDAV server
-would, use `ical/expand`. For a recurrence rule on its own, the
-[`rrule`](src/dk/simongray/ical/rrule.cljc) namespace parses, writes and
-expands it:
+An event with the same UID and an instance's RECURRENCE-ID takes the
+place of that instance. With RANGE=THISANDFUTURE, it moves the later
+instances too. To get the instances between two dates, as a calendar
+feed or a CalDAV server would, use `ical/expand`. For a recurrence rule on
+its own, the [`rrule`](src/dk/simongray/ical/rrule.cljc) namespace
+parses, writes and expands it:
 
 ```clojure
 (require '[dk.simongray.ical.rrule :as rrule])
@@ -113,15 +112,15 @@ expands it:
 ;; => ("2026-01-31" "2026-03-31" "2026-05-31")
 ```
 
-As RFC 5545 says, a monthly rule from the 31st skips the months that are
-shorter. A time that doesn't occur, when the clocks go forward, is moved
-forward by the gap, and DTSTART is always the first instance.
+As RFC 5545 says, a monthly rule from the 31st skips the shorter months.
+A time that doesn't exist, because the clocks go forward, moves forward
+by the length of the gap. DTSTART is always the first instance.
 
 Time zones
 ----------
 
-Get the instant of a date-time with `ical/instant`, which reads its TZID
-in the calendar:
+Get the instant of a date-time with `ical/instant`, which resolves its
+TZID within the calendar:
 
 ```clojure
 (ical/instant cal (ical/property event :dtstart))
@@ -129,8 +128,9 @@ in the calendar:
 ```
 
 The [`tz`](src/dk/simongray/ical/tz.cljc) namespace finds the zone that a
-TZID names. It tries the platform's database first, then a Windows name
-such as W. Europe Standard Time, then the calendar's own VTIMEZONE:
+TZID names. It tries the platform's database first, then the Windows
+names such as W. Europe Standard Time, and then the calendar's own
+VTIMEZONEs:
 
 ```clojure
 (require '[dk.simongray.ical.tz :as tz])
@@ -139,18 +139,18 @@ such as W. Europe Standard Time, then the calendar's own VTIMEZONE:
 ;; => "2026-10-12T19:00:00"
 ```
 
-A calendar for others should define every zone it uses, which
-`tz/with-timezones` takes care of.
+A calendar that you send to others should define every zone it uses.
+Add the missing VTIMEZONEs with `tz/with-timezones`.
 
 Scheduling
 ----------
 
 The [`itip`](src/dk/simongray/ical/itip.cljc) namespace builds the messages
-of [iTIP](https://www.rfc-editor.org/rfc/rfc5546), such as a REQUEST from
-the organizer and a REPLY from an attendee, and applies those that come
-in. It sends nothing: `itip/content-type` gives the MIME type to send a
-message by e-mail with, and `itip/originator` the address it should come
-from.
+of [iTIP](https://www.rfc-editor.org/rfc/rfc5546), such as an organizer's
+REQUEST and an attendee's REPLY, and applies those you receive to a
+stored calendar. Sending them is up to you. For e-mail,
+`itip/content-type` gives the MIME type, and `itip/originator` the
+address that a message should come from:
 
 ```clojure
 (require '[dk.simongray.ical.itip :as itip])
@@ -182,25 +182,23 @@ END:VCALENDAR\r
 ;;     {:error :end-before-start, :level :error, :path [:components 0 :properties 1]}]
 ```
 
-To ask whether there are errors, as opposed to warnings, use
-`ical/valid?`.
+To check for errors and ignore the warnings, use `ical/valid?`.
 
 Principles
 ----------
 
 - **Standards first.** The code follows RFC 5545 with its verified
-  errata, its extensions for new properties, event publishing, alarms,
-  relationships and availability, and iTIP. It cites their sections.
-- **Plain data.** Calendars are maps and vectors, and values are strings,
-  numbers and maps, so they print, compare and convert to JSON as they
-  are.
-- **No time library.** The library does its own date arithmetic, because
-  iCalendar skips dates that java.time would move, and gets zone offsets
-  from the platform. Since dates and times are ISO 8601 strings, tick or
-  java.time reads them as they are.
+  errata, the extensions it has had since, and iTIP. It cites the section
+  of each rule.
+- **Plain data.** Calendars are maps and vectors of strings and numbers,
+  so they print, compare and convert to JSON as they are.
+- **No time library.** Recurrence rules skip dates that java.time would
+  move, so the library does its own date arithmetic and only asks the
+  platform for zone offsets. Dates and times are ISO 8601 strings, which
+  tick and java.time read as they are.
 - **One codebase.** The library is written in `.cljc` and gives the same
-  results everywhere, where the platforms' copies of the time zone
-  database are the same version.
+  results everywhere, as long as the platforms have the same version of
+  the time zone database.
 
 Development
 -----------

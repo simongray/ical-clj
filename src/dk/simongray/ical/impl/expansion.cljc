@@ -97,7 +97,7 @@
     :else                            y))
 
 (defn normalize
-  "The recurrence `rule`, as the values namespace reads it, ready to
+  "The recurrence `rule`, as the values namespace parses it, ready to
   expand from the local time `start`: its numbers in range, BYDAY as pairs
   of ordinal and weekday, WKST as a weekday, and the parts it leaves out
   filled in from `start`. A `date?` start is a date."
@@ -268,7 +268,7 @@
       (:bysetpos rule) (set-positions (:bysetpos rule)))))
 
 (defn- period-start
-  "The earliest local time that the `k`th period of the `rule` can make.
+  "The earliest local time that the `k`th period of the `rule` can hold.
   A YEARLY period with BYWEEKNO can start in the year before."
   [{:keys [freq interval year month day wkst byweekno]} k start]
   (* 86400
@@ -326,10 +326,10 @@
             (if (seq xs) [k xs] (recur (inc k)))))))))
 
 (defn local-times
-  "The local times that the normalized `rule` makes from the local time
-  `start`, in order, as a lazy sequence that ends where the rule does, or
-  never. It doesn't apply COUNT or UNTIL, and leaves out `start` unless
-  the rule makes it."
+  "The local times that the normalized `rule` generates from the local
+  time `start`, in order, as a lazy sequence that ends where the rule
+  does, or never. It ignores COUNT and UNTIL, and leaves out `start`
+  unless the rule generates it."
   [rule start]
   (letfn [(step [k latest]
             (lazy-seq
@@ -341,10 +341,11 @@
 ;; instance in the recurrence set", and section 3.3.10: "The "DTSTART"
 ;; property value always counts as the first occurrence."
 (defn rule-times
-  "The local times of the recurrence `rule`, as the values namespace reads
-  it, from the local time `start`: `start` first, even when the rule
-  doesn't make it, then those the rule makes until `past?` is true of
-  one, at most COUNT in all. A `date?` start is a date."
+  "The local times of the recurrence `rule`, as the values namespace
+  parses it, from the local time `start`. They're `start` itself, even
+  when the rule doesn't generate it, and then the times the rule
+  generates until `past?` is true of one, at most COUNT in all. A `date?`
+  start is a date."
   [rule start date? past?]
   (lazy-seq
    (let [xs (cond->> (local-times (normalize rule start date?) start)

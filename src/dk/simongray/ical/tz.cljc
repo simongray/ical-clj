@@ -1,11 +1,11 @@
 (ns dk.simongray.ical.tz
-  "Time zones: the zone that a TZID names, its offset at an instant, and
-  local date-times turned into instants and back.
+  "Find the zone that a TZID names, and convert between its local
+  date-times and instants.
 
   A zone comes from the platform's time zone database (ZoneRules on the
   JVM, Intl.DateTimeFormat in JavaScript), from a VTIMEZONE in a calendar,
-  or from a fixed UTC offset. The two platforms give the same answers
-  where their copies of the database are the same version.
+  or from a fixed UTC offset. The two platforms agree as long as their
+  copies of the database are the same version.
 
   Local date-times are strings in the form of jCal, e.g.
   \"2026-10-12T19:00:00\", and instants are insts."
@@ -15,8 +15,7 @@
             [dk.simongray.ical.impl.zones :as zones]))
 
 (defn- platform-zone
-  "The zone of the platform's database that the name `s` names, as the
-  zone of `tzid`, or nil."
+  "The platform's zone named `s`, as the zone of the TZID `tzid`, or nil."
   [tzid s]
   (when-let [iana (zones/platform-name s)]
     {:tzid tzid :iana iana}))
@@ -54,20 +53,20 @@
 
 (defn zone
   "The zone that the TZID `tzid` names, or nil when nothing defines it.
-  With the calendar `cal`, its VTIMEZONEs can define it too.
+  Given the calendar `cal`, its VTIMEZONEs can define the zone too.
 
-  A TZID is tried, in order:
+  The function tries `tzid`, in order:
 
-  1. as the name of a zone in the platform's database, ignoring case
-  2. without a prefix, when it starts with a solidus, e.g.
+  1. as a zone name of the platform's database, ignoring case
+  2. without its prefix, when it starts with a solidus, e.g.
      /mozilla.org/20050126_1/Europe/Berlin
-  3. as a Windows zone name, e.g. W. Europe Standard Time, by CLDR's
-     windowsZones
-  4. as a VTIMEZONE of `cal`
+  3. as a Windows zone name, e.g. W. Europe Standard Time, mapped by
+     CLDR's windowsZones
+  4. as the TZID of a VTIMEZONE in `cal`
 
-  The platform's zone comes before the calendar's own definition, which is
-  often stale or covers only a few years. With `opts`, :vtimezone? true
-  puts the calendar's first. A fixed UTC offset such as +02:00 is a zone
+  The platform comes first because a calendar's own definition is often
+  stale or covers only a few years. To prefer the calendar's, pass
+  :vtimezone? true in `opts`. A fixed UTC offset such as +02:00 is a zone
   too."
   ([tzid]
    (zone nil tzid {}))
@@ -101,9 +100,9 @@
 
 ;; RFC 5545, section 3.3.5
 (defn instant
-  "The inst of the local date-time `s` in the `zone`. A time that occurs
-  twice, when the clocks go back, is the first of them, and one that
-  doesn't occur, when they go forward, takes the offset from before.
+  "The inst of the local date-time `s` in the `zone`. When the clocks go
+  back, a time that occurs twice means the first of them. When they go
+  forward, a time that doesn't occur takes the offset from before.
 
       (instant (zone \"America/New_York\") \"2007-03-11T02:30:00\")
       ;; => #inst \"2007-03-11T07:30:00.000-00:00\" (3:30 EDT)"
@@ -191,10 +190,9 @@
                 (observance run (yearly-rule (yearly-key (first run)))))))))
 
 (defn vtimezone
-  "A VTIMEZONE component for the `zone` with the TZID `tzid`, made from the
-  offsets that the platform gives it from the year `from` to the year
-  `to`. Where the zone follows yearly rules at the end of that span, they
-  become RRULEs that go on after it.
+  "A VTIMEZONE with the TZID `tzid` for the platform's `zone`, covering
+  the years `from` to `to`. If the zone follows yearly rules at the end of
+  that span, they become RRULEs, so the definition goes on after it.
 
       (vtimezone (zone \"Europe/Copenhagen\") \"Europe/Copenhagen\" 2026 2027)"
   [zone tzid from to]
@@ -230,10 +228,10 @@
 ;; RFC 5545, section 3.2.19: each TZID of a calendar needs a VTIMEZONE in
 ;; it
 (defn with-timezones
-  "The calendar `cal` with a VTIMEZONE first for each TZID that it uses
-  without defining it, when the platform knows the zone (see vtimezone).
-  Those it already defines, and those of unknown zones, are left as they
-  are."
+  "The calendar `cal` with a VTIMEZONE added at the front for each TZID
+  that it uses without defining, when the platform knows the zone (see
+  vtimezone). The TZIDs that `cal` defines, and those that name no known
+  zone, stay as they are."
   [cal]
   (let [defined (set (for [c     (:components cal)
                            :when (= :vtimezone (:name c))

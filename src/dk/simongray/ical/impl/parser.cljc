@@ -1,10 +1,10 @@
 (ns ^:no-doc dk.simongray.ical.impl.parser
-  "The text of an iCalendar stream read into components, by RFC 5545,
+  "Parse the text of an iCalendar stream into components, by RFC 5545,
   sections 3.4 to 3.6.
 
   A component is a map of :name, :properties and :components, and a
-  property a map of :name, :params, :type and :value, as the root
-  namespace describes them. Each key is left out when it's empty, and
+  property is a map of :name, :params, :type and :value, as the root
+  namespace describes them. A key is left out when it would be empty, and
   :type when it's the property's default."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.lines :as lines]
@@ -23,8 +23,8 @@
   (cons (:type entry) (filter (or (:types entry) #{}) type-order)))
 
 (defn- read-typed
-  "The value of the type `type` of the property `entry` written as `text`,
-  or ::values/invalid."
+  "The value of the type `type` in the text `text` of a property with the
+  registry `entry`, or ::values/invalid."
   [entry type text]
   (let [parts (:parts entry)]
     (cond
@@ -72,7 +72,7 @@
 ;; without VALUE, e.g. a DTSTART that is a date, are read as the first of
 ;; the property's other types that fits.
 (defn read-property
-  "The property of the content line `line`, as lines/read-line gives it."
+  "The property of the content line `line`, as lines/read-line returns it."
   [{k :name :keys [params text]}]
   (let [entry    (registry/property k)
         explicit (explicit-type (:value params))

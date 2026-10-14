@@ -4,9 +4,9 @@
   the components that override an instance by its RECURRENCE-ID
   (section 3.8.4.4).
 
-  A frame is how a date or date-time property reads: a map of :date?,
-  :utc? and :zone, the zone of its TZID, or nil for a floating time. The
-  instances are local seconds in the frame of DTSTART."
+  A frame says how to interpret a date or date-time property: it's a map
+  of :date?, :utc? and :zone, the zone of its TZID (or nil for a floating
+  time). The instances are local seconds in the frame of DTSTART."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.expansion :as expansion]
@@ -30,9 +30,10 @@
   (and (string? v) (boolean (re-matches #"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z?)?" v))))
 
 (defn frame
-  "The frame of the property `p` in the calendar `cal`, reading a TZID by
-  tz/zone with `opts`. A floating time takes the zone :floating of `opts`,
-  when given. A value that isn't a date or a date-time has no frame."
+  "The frame of the property `p` in the calendar `cal`, with its TZID
+  resolved by tz/zone with `opts`. A floating time takes the zone
+  :floating of `opts`, when given. A value that isn't a date or a
+  date-time has no frame."
   [cal p opts]
   (let [v (cond-> (:value p) (sequential? (:value p)) first)
         v (if (map? v) (:start v) v)]
@@ -69,7 +70,7 @@
     (or (when t (local-of to t)) x)))
 
 (defn text
-  "The local time `x` in the form of jCal of the `frame`: a date, or a
+  "The local time `x` as text in the form of the `frame`: a date, or a
   date-time with a Z in UTC."
   [frame x]
   (if (:date? frame) (civil/date-text x) (civil/date-time-text x (:utc? frame))))
@@ -105,7 +106,7 @@
 ;; RFC 5545, section 3.3.10: UNTIL is in UTC when DTSTART has a zone or is
 ;; in UTC, and floating when DTSTART is
 (defn- until-past
-  "A function that tells whether a local time of the frame `fr` is past the
+  "A predicate of whether a local time of the frame `fr` is past the
   UNTIL `until` of a rule, or nil without one. A date as UNTIL for a
   date-time DTSTART ends with its day."
   [fr until]
@@ -117,8 +118,8 @@
         #(> % limit)))))
 
 (defn- rule-times
-  "The local times that the rules of the properties `ps` make from the
-  local time `start` in the frame `fr`, each sorted, as a seq of seqs."
+  "The local times that the rules of the properties `ps` generate from the
+  local time `start` in the frame `fr`, as one sorted seq per rule."
   [ps start fr]
   (for [p     ps
         :let  [rule (:value p)]
@@ -310,7 +311,7 @@
 
 (defn- span
   "The instants of the start and the end of the component `c`, as a pair,
-  with a floating time read as if in UTC."
+  with a floating time counted as UTC."
   [cal c opts]
   (let [utc   (assoc opts :floating {:tzid "UTC" :offset 0})
         start (instant-of cal (prop c :dtstart) utc)

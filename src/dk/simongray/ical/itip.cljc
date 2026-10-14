@@ -1,11 +1,12 @@
 (ns dk.simongray.ical.itip
-  "Scheduling messages of iTIP (RFC 5546): built from a calendar, compared
-  and applied to a stored one. A message is a calendar with a METHOD.
+  "Build the scheduling messages of iTIP (RFC 5546) from a calendar, and
+  apply those you receive to a stored one. A message is a calendar with a
+  METHOD.
 
-  Nothing is sent. For iMIP (RFC 6047), content-type gives the MIME type of
-  a message, and originator the address it should come from, which the
-  receiver checks against the mail's verified sender (RFC 6047, section
-  3)."
+  The namespace sends nothing. For e-mail by iMIP (RFC 6047),
+  content-type gives a message's MIME type and originator the address it
+  should come from, which the receiver checks against the mail's verified
+  sender (RFC 6047, section 3)."
   (:refer-clojure :exclude [apply])
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
@@ -74,8 +75,8 @@
         tz/with-timezones)))
 
 (defn address
-  "The calendar user address `s` (RFC 5545, section 3.3.3) in the form in
-  which two of them compare: without mailto: and in lower case."
+  "The calendar user address `s` (RFC 5545, section 3.3.3) without mailto:
+  and in lower case, so that two addresses compare."
   [s]
   (str/lower-case (str/replace-first (str/trim (str s)) #"(?i)^mailto:" "")))
 
@@ -87,7 +88,7 @@
 ;; RFC 5546, section 3.2.1: a published component has no attendees
 (defn publish
   "The calendar `cal` as a PUBLISH message, without attendees. The `opts`
-  can give :now, the inst of its DTSTAMPs."
+  can give :now, the inst to use for its DTSTAMPs."
   ([cal]
    (publish cal {}))
   ([cal opts]
@@ -97,8 +98,8 @@
 ;; RFC 5546, section 3.2.2
 (defn request
   "The calendar `cal` as a REQUEST message, which an organizer sends to
-  the attendees, to invite them or to update the event. The `opts` can
-  give :now, the inst of its DTSTAMPs."
+  invite the attendees or to update the event. The `opts` can give :now,
+  the inst to use for its DTSTAMPs."
   ([cal]
    (request cal {}))
   ([cal opts]
@@ -107,12 +108,12 @@
 ;; RFC 5546, section 3.2.3: a reply has the one attendee who replies,
 ;; and what identifies the component
 (defn reply
-  "The REPLY message of the attendee with the address `attendee` to the
-  calendar `cal`, with the participation status `partstat`, e.g.
-  \"ACCEPTED\", \"DECLINED\" or \"TENTATIVE\". Each scheduled component
-  keeps only its UID, RECURRENCE-ID, SEQUENCE, DTSTART, ORGANIZER and the
-  attendee, who is added when the organizer didn't invite them. The
-  `opts` can give :now, the inst of its DTSTAMPs.
+  "The REPLY from the attendee with the address `attendee` to the calendar
+  `cal`, with the participation status `partstat`, e.g. \"ACCEPTED\",
+  \"DECLINED\" or \"TENTATIVE\". Each scheduled component keeps only its
+  UID, RECURRENCE-ID, SEQUENCE, DTSTART and ORGANIZER, and the attendee,
+  who is added if the organizer didn't invite them. The `opts` can give
+  :now, the inst to use for its DTSTAMPs.
 
       (reply cal \"mailto:simon@gf.example\" \"ACCEPTED\")"
   ([cal attendee partstat]
@@ -137,11 +138,11 @@
 
 ;; RFC 5546, section 3.2.5: a cancellation increments SEQUENCE
 (defn cancel
-  "The calendar `cal` as a CANCEL message: each scheduled component with
-  STATUS:CANCELLED and its SEQUENCE incremented. With the addresses
-  `attendees`, it's the message to those attendees alone, who are removed
-  from the event, and the status stays. The `opts` can give :now, the inst
-  of its DTSTAMPs."
+  "The calendar `cal` as a CANCEL message, with STATUS:CANCELLED and an
+  incremented SEQUENCE in each scheduled component. With the addresses
+  `attendees`, it's instead the message that removes those attendees from
+  the event: it lists only them, and leaves STATUS alone. The `opts` can
+  give :now, the inst to use for its DTSTAMPs."
   ([cal]
    (cancel cal nil {}))
   ([cal attendees]
@@ -177,15 +178,15 @@
               :else           v))])))
 
 (defn significant-change?
-  "Whether the component `new` changes one of the properties of `old`
-  that RFC 5546, section 2.1.4, makes the organizer increment SEQUENCE
-  for: DTSTART, DTEND, DURATION, DUE, RRULE, RDATE, EXDATE or STATUS."
+  "Whether the component `new` changes a property of `old` that calls for
+  a new SEQUENCE, by RFC 5546, section 2.1.4: DTSTART, DTEND, DURATION,
+  DUE, RRULE, RDATE, EXDATE or STATUS."
   [old new]
   (boolean (some #(not= (comparable old %) (comparable new %)) significant)))
 
 (defn- identity-of
-  "The UID and the recurrence id of the component `c` of the calendar
-  `cal`, the second as an instant when it has one."
+  "The name, the UID and the recurrence id of the component `c` in the
+  calendar `cal`, with the recurrence id as an instant when it has one."
   [cal c]
   [(:name c) (value c :uid)
    (when-let [p (prop c :recurrence-id)]
@@ -193,10 +194,10 @@
          (:value p)))])
 
 (defn revise
-  "The calendar `new` with the SEQUENCE of each scheduled component one
-  more than that of its version in the calendar `old`, when it changes
-  what significant-change? looks at. Components that `old` doesn't have
-  keep theirs."
+  "The calendar `new` with a higher SEQUENCE in each scheduled component
+  that changes significantly from its version in the calendar `old` (see
+  significant-change?). The new SEQUENCE is one more than the higher of
+  the two, and a component that `old` lacks keeps its own."
   [old new]
   (let [olds (into {} (for [c (:components old) :when (scheduled (:name c))]
                         [(identity-of old c) c]))]
@@ -219,8 +220,8 @@
         (and (= sa sb) (pos? (compare (str (value a :dtstamp)) (str (value b :dtstamp))))))))
 
 (defn- replace-components
-  "The calendar `cal` with the components that `pred` is true of replaced
-  by `cs`, which come where the first of them was, or at the end."
+  "The calendar `cal` with `cs` in place of the components that match
+  `pred`, where the first of them was, or at the end."
   [cal pred cs]
   (let [old (:components cal)
         i   (first (keep-indexed #(when (pred %2) %1) old))
@@ -303,17 +304,19 @@
       :else                            (update cal :components conj m))))
 
 (defn apply
-  "The stored calendar `cal` with the message `msg` applied:
+  "The stored calendar `cal` with the message `msg` applied to it, by the
+  message's method:
 
-  - REPLY: each attendee's PARTSTAT in the organizer's copy, unless the
-    reply is to an older SEQUENCE, with an override made for a reply to
-    one instance
-  - REQUEST, PUBLISH or ADD: the components that are newer, by newer?,
-    where a master replaces the stored components of its UID
-  - CANCEL: the cancelled components, with their STATUS, in place of the
-    stored ones
+  - REPLY: the organizer's copy takes the attendee's PARTSTAT, unless the
+    reply is to an older SEQUENCE. A reply to one instance adds an
+    override for it.
+  - REQUEST, PUBLISH or ADD: the newer components (see newer?) replace
+    the stored ones, and a new master replaces all the stored components
+    with its UID.
+  - CANCEL: the cancelled components, with their STATUS, replace the
+    stored ones or are added.
 
-  A message of another method leaves `cal` as it is."
+  Any other method leaves `cal` unchanged."
   [cal msg]
   (let [method (str/upper-case (str (value msg :method)))
         ms     (filter #(scheduled (:name %)) (:components msg))]
@@ -325,7 +328,7 @@
 
 ;; RFC 6047, section 2.4
 (defn content-type
-  "The MIME type of the message `msg` in an e-mail, by iMIP.
+  "The MIME type of the message `msg` in an iMIP e-mail.
 
       (content-type msg)
       ;; => \"text/calendar; method=REQUEST; charset=UTF-8\""
@@ -336,8 +339,8 @@
 ;; a REPLY, a REFRESH or a COUNTER, and the organizer the others
 (defn originator
   "The calendar user address that the message `msg` should come from: the
-  ATTENDEE of a REPLY, a REFRESH or a COUNTER, and the ORGANIZER of the
-  others."
+  ATTENDEE for a REPLY, a REFRESH or a COUNTER, and the ORGANIZER for any
+  other method."
   [msg]
   (let [c (some #(when (scheduled (:name %)) %) (:components msg))]
     (if (#{"REPLY" "REFRESH" "COUNTER"} (str/upper-case (str (value msg :method))))

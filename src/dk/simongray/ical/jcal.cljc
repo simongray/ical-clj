@@ -1,10 +1,10 @@
 (ns dk.simongray.ical.jcal
-  "Calendars in jCal, the JSON form of iCalendar (RFC 7265), as Clojure
-  data that any JSON library writes and reads: vectors, maps with string
-  keys, strings, numbers and booleans.
+  "Convert calendars to and from jCal, the JSON form of iCalendar (RFC
+  7265). The jCal is Clojure data that any JSON library can write and
+  read: vectors, maps with string keys, strings, numbers and booleans.
 
-  The values of a calendar already take jCal's forms, so the conversion
-  only changes the shape of components, properties and parameters."
+  A calendar's values already take jCal's forms, so only the shape of its
+  components, properties and parameters changes."
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.registry :as registry]))
 
@@ -58,7 +58,7 @@
 
 (defn- jcal->property
   "The property of the jCal array `a`."
-  [[k params type & values]]
+  [[k params type & values :as a]]
   (let [k      (keyword (str/lower-case k))
         entry  (registry/property k)
         type   (keyword (str/lower-case type))
@@ -75,7 +75,7 @@
 
 (defn jcal->calendar
   "The component of the jCal array `a`, the inverse of calendar->jcal."
-  [[k properties components]]
+  [[k properties components :as a]]
   (cond-> {:name (keyword (str/lower-case k))}
     (seq properties) (assoc :properties (mapv jcal->property properties))
     (seq components) (assoc :components (mapv jcal->calendar components))))

@@ -1,11 +1,11 @@
 (ns ^:no-doc dk.simongray.ical.impl.lines
-  "Content lines, by RFC 5545, section 3.1: unfolding and folding, and a
-  line read into its name, its parameters and the text of its value, with
-  the parameter values encoded by RFC 6868.
+  "Content lines, by RFC 5545, section 3.1: unfold and fold them, and
+  split a line into its name, its parameters and the text of its value,
+  with parameter values encoded by RFC 6868.
 
-  A read line is a map of :name, a lower-case keyword, :params, a map of
-  lower-case keyword to a string or a vector of strings (when a parameter
-  has several values), and :text, the value as written."
+  A parsed line is a map of :name, a lower-case keyword, :params, a map
+  of lower-case keywords to strings (or vectors of strings, for a
+  parameter with several values), and :text, the value as written."
   (:refer-clojure :exclude [read-line])
   (:require [clojure.string :as str]))
 

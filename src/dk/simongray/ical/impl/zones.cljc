@@ -72,8 +72,8 @@
              (.formatToParts f (js/Date. (* 1000 t))))))
 
 (defn- platform-offset
-  "The offset in seconds of the zone the platform names `iana` at the
-  instant `t`."
+  "The offset in seconds of the platform's zone `iana` at the instant
+  `t`."
   [iana t]
   #?(:clj  (-> (ZoneId/of iana) .getRules
                (.getOffset (Instant/ofEpochSecond t)) .getTotalSeconds)

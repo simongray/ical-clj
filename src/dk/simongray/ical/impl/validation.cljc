@@ -1,10 +1,14 @@
 (ns ^:no-doc dk.simongray.ical.impl.validation
   "The ways a calendar breaks RFC 5545 and its extensions, as data.
 
-  Each error is a map of :error, a keyword, :level, :error for what the
-  RFC says MUST or MUST NOT be and :warning for what it says SHOULD or
-  SHOULD NOT be, :path, where `get-in` finds the component or the property
-  in the calendar, and whatever else tells what's wrong, e.g. :property."
+  Each error is a map of:
+
+  - :error, a keyword
+  - :level, :error where the RFC says MUST or MUST NOT, and :warning
+    where it says SHOULD or SHOULD NOT
+  - :path, the path that get-in takes to the component or property in the
+    calendar
+  - keys with the details, e.g. :property"
   (:require [clojure.string :as str]
             [dk.simongray.ical.impl.civil :as civil]
             [dk.simongray.ical.impl.expansion :as expansion]
@@ -33,7 +37,7 @@
 ;; RFC 5545, section 3.2.20: a value must be of its type
 (defn- invalid-values
   "The properties of the component `c` at `path` that the registry knows,
-  and whose values didn't read as their type."
+  and whose values didn't parse as their type."
   [c path]
   (for [[i p] (map-indexed vector (:properties c))
         :when (and (= :unknown (:type p))
@@ -215,10 +219,10 @@
           (component-errors cal cal [] with-method?)))))
 
 (defn stream-errors
-  "The errors of a text that the parser read as `stream`, a map of
-  :components, :dropped and :unclosed: the lines it left out and the
-  components it closed, then the errors of each component, with a path
-  that starts with its index."
+  "The errors of a text that the parser turned into `stream`, a map of
+  :components, :dropped and :unclosed. They're the lines it skipped and
+  the components it closed, then the errors of each component, with a
+  path that starts with the component's index."
   [{:keys [components dropped unclosed]}]
   (vec (concat
         (for [[n text] dropped]
