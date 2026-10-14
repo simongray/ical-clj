@@ -345,14 +345,31 @@
       (some #(and (= (:name c) (:name %)) (= uid (:value (prop % :uid))) (recurring? %))
             (:components cal)))))
 
+(defn- earliest-move
+  "The longest time by which a component of the calendar `cal` moves an
+  instance of the component `c` earlier than its recurrence id, in
+  seconds, or 0. A floating time counts as UTC."
+  [cal c opts]
+  (let [utc (assoc opts :floating {:tzid "UTC" :offset 0})
+        uid (:value (prop c :uid))]
+    (reduce max 0 (for [o     (:components cal)
+                        :when (and (= (:name c) (:name o)) (= uid (:value (prop o :uid))))
+                        :let  [r (instant-of cal (prop o :recurrence-id) utc)
+                               s (instant-of cal (prop o :dtstart) utc)]
+                        :when (and r s)]
+                    (- r s)))))
+
+;; The instances come in the order of their recurrence ids, but an
+;; override can move one earlier, into the range, from past its end
 (defn- instances-in
   "The instances of the recurring component `c` of the calendar `cal` that
-  overlap the instants `from` to `to`, up to the first whose recurrence id
-  is past `to`."
+  overlap the instants `from` to `to`. They're looked for up to the first
+  whose recurrence id is past `to` by more than any override moves one."
   [cal c from to opts]
-  (let [utc (assoc opts :floating {:tzid "UTC" :offset 0})]
+  (let [utc   (assoc opts :floating {:tzid "UTC" :offset 0})
+        until (+ to (earliest-move cal c opts))]
     (->> (occurrences cal c opts)
-         (take-while #(< (or (instant-of cal (prop % :recurrence-id) utc) 0) to))
+         (take-while #(< (or (instant-of cal (prop % :recurrence-id) utc) 0) until))
          (filter #(overlaps? cal % from to opts)))))
 
 ;; RFC 4791, section 9.6.5

@@ -140,16 +140,61 @@
           ()
           observances))
 
-(defn vtimezone-zone
+(def ^:private horizon
+  "The instant up to which the transitions of a VTIMEZONE are kept in a
+  vector: the start of the year 2200."
+  (* 86400 (civil/days-from-civil 2200 1 1)))
+
+;; Outlook's VTIMEZONEs start their rules in 1601, so the transitions up
+;; to now are many, and a vector is searched by bisection
+(defn- transition-table
+  "The transitions of the `observances` as a map of :near, a vector of
+  those before the horizon, and :far, a lazy sequence of the rest."
+  [observances]
+  (let [[near far] (split-with #(< (first %) horizon) (transitions-of observances))]
+    {:near (vec near) :far far}))
+
+(defn- vtimezone-zone*
   "The zone that the VTIMEZONE component `c` defines, or nil when it has
   no observance."
   [c]
   (let [observances (keep observance (:components c))]
     (when (seq observances)
       {:tzid        (first-value c :tzid)
-       :observances {:transitions (delay (transitions-of observances))
+       :observances {:table   (delay (transition-table observances))
                      ;; before the first onset, the offset it starts from
-                     :initial     (:from (apply min-key :start observances))}})))
+                     :initial (:from (apply min-key :start observances))}})))
+
+(def ^:private vtimezone-cache
+  "The zones of the VTIMEZONE components that have been asked for, which
+  is emptied when it holds too many."
+  (atom {}))
+
+;; A calendar's times are resolved one at a time, and each would otherwise
+;; expand the rules of its VTIMEZONE again
+(defn vtimezone-zone
+  "The zone that the VTIMEZONE component `c` defines, or nil when it has
+  no observance."
+  [c]
+  (if-let [z (find @vtimezone-cache c)]
+    (val z)
+    (let [z (vtimezone-zone* c)]
+      (swap! vtimezone-cache #(assoc (if (< (count %) 256) % {}) c z))
+      z)))
+
+(defn- offset-in
+  "The offset at the instant `t` of the `transitions`, a vector of pairs
+  of an instant and the offset from then on, in order, or `initial`
+  before the first, by bisection."
+  [transitions initial t]
+  (loop [lo 0, hi (dec (count transitions)), current initial]
+    (if (> lo hi)
+      current
+      (let [mid       (quot (+ lo hi) 2)
+            [at off]  (nth transitions mid)]
+        (if (<= at t)
+          (recur (inc mid) hi off)
+          (recur lo (dec mid) current))))))
 
 (defn- transition-offset
   "The offset at the instant `t` of the zone with the `transitions`, pairs
@@ -167,8 +212,12 @@
   (cond
     (:iana zone)   (platform-offset (:iana zone) t)
     (:offset zone) (:offset zone)
-    :else          (let [{:keys [transitions initial]} (:observances zone)]
-                     (transition-offset @transitions initial t))))
+    :else          (let [{:keys [table initial]}  (:observances zone)
+                         {:keys [near far]}       @table
+                         before                   (offset-in near initial t)]
+                     (if (< t horizon)
+                       before
+                       (transition-offset far before t)))))
 
 (defn local
   "The local time of the instant `t` in the `zone`."

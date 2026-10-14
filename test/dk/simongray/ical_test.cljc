@@ -121,7 +121,33 @@
               :components [{:name :vevent :properties [{:name :summary :value "ab"}]}]}
              cal))))
   (testing "a text with no component"
-    (is (nil? (ical/parse "nothing here")))))
+    (is (nil? (ical/parse "nothing here"))))
+  (testing "a byte order mark"
+    (is (= {:name :vcalendar :properties [{:name :version :value "2.0"}]}
+           (ical/parse "﻿BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n")))))
+
+(defn utf-8
+  "The bytes of the string `s` in UTF-8, a byte array or a Uint8Array."
+  [s]
+  #?(:clj (.getBytes ^String s "UTF-8") :cljs (.encode (js/TextEncoder.) s)))
+
+(defn splice
+  "The bytes `a` with the bytes `b` inserted at the index `i`."
+  [a b i]
+  #?(:clj  (byte-array (concat (take i a) b (drop i a)))
+     :cljs (js/Uint8Array. (clj->js (concat (take i (array-seq a)) (array-seq b)
+                                            (drop i (array-seq a)))))))
+
+(deftest utf-8-bytes
+  (let [text   (crlf "BEGIN:VEVENT" "SUMMARY:Bestyrelsesmøde" "END:VEVENT")
+        bs     (utf-8 text)
+        ;; a fold between the two bytes of ø
+        split  (+ (count "BEGIN:VEVENT\r\nSUMMARY:Bestyrelsesm") 1)
+        folded (splice bs (utf-8 "\r\n ") split)]
+    (testing "bytes of UTF-8 parse as their text does"
+      (is (= (ical/parse text) (ical/parse bs))))
+    (testing "a fold that splits a character keeps it whole"
+      (is (= "Bestyrelsesmøde" (ical/value (ical/parse folded) :summary))))))
 
 (deftest folding
   (let [summary (apply str (repeat 100 "ø€😀"))

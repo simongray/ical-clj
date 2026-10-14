@@ -2,6 +2,7 @@
   "The files that dev/fetch.sh puts in dev-resources, read the same way on
   the JVM and in Node. Each is nil when it isn't there, and the tests of
   its data then check nothing."
+  (:refer-clojure :exclude [bytes])
   (:require #?(:cljs ["fs" :as fs])
             #?(:clj [clojure.data.json :as json])
             #?(:clj [clojure.java.io :as io])
@@ -15,6 +16,16 @@
                (when (.exists f) (slurp f :encoding "UTF-8")))
        :cljs (when (fs/existsSync path)
                (fs/readFileSync path "utf8")))))
+
+(defn bytes
+  "The bytes of the file at `path` in dev-resources, a byte array or a
+  Node Buffer, or nil."
+  [path]
+  (let [path (str "dev-resources/" path)]
+    #?(:clj  (let [f (io/file path)]
+               (when (.exists f) (java.nio.file.Files/readAllBytes (.toPath f))))
+       :cljs (when (fs/existsSync path)
+               (fs/readFileSync path)))))
 
 (defn json
   "The data of the JSON file at `path` in dev-resources, with string keys,

@@ -28,7 +28,8 @@
   A value that doesn't parse as its type keeps its original text, with
   the :type :unknown. So does an unknown property whose text would change
   if it were unescaped."
-  (:require [dk.simongray.ical.impl.parser :as parser]
+  (:require [dk.simongray.ical.impl.lines :as lines]
+            [dk.simongray.ical.impl.parser :as parser]
             [dk.simongray.ical.impl.recurrence :as recurrence]
             [dk.simongray.ical.impl.serializer :as serializer]
             [dk.simongray.ical.impl.validation :as validation]
@@ -38,11 +39,13 @@
   "The top-level components of the text `s`, usually VCALENDARs, in
   order. RFC 5545 lets a stream hold several (section 3.4).
 
-  The parser is lenient: it skips the lines that aren't content lines and
+  The text can also be bytes of UTF-8 (a byte array, or in JavaScript a
+  Uint8Array), which keeps a character intact when a fold splits it. The
+  parser is lenient: it skips the lines that aren't content lines and
   closes the components that the text leaves open. To see what it
   forgave, call validation-errors on the text."
   [s]
-  (:components (parser/read-stream (str s))))
+  (:components (parser/read-stream (lines/text s))))
 
 (defn parse
   "The first top-level component of the text `s`, usually a VCALENDAR, or
@@ -186,7 +189,7 @@
   [x]
   (if (map? x)
     (validation/calendar-errors x)
-    (validation/stream-errors (parser/read-stream (str x)))))
+    (validation/stream-errors (parser/read-stream (lines/text x)))))
 
 (defn valid?
   "Whether `x`, a calendar or the text of one, has no validation errors

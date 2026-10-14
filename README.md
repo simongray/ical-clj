@@ -82,7 +82,9 @@ value with `ical/value`:
 ```
 
 To turn a calendar back into text, use `ical/serialize`. For a stream of
-several calendars, use `ical/parse-all`.
+several calendars, use `ical/parse-all`. Both parse functions also take
+the bytes of a file (a byte array, or a Uint8Array in JavaScript), which
+is safer than its text, since a fold can split a character in two.
 
 Recurrence
 ----------

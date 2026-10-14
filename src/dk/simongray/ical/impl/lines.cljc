@@ -9,14 +9,55 @@
   (:refer-clojure :exclude [read-line])
   (:require [clojure.string :as str]))
 
+(defn- fold-length
+  "The length of the fold at the index `i` of the UTF-8 `bytes` of `n`
+  bytes: 3 for CRLF and a space or a tab, 2 for LF and one, or 0."
+  [bytes n i]
+  (let [at #(when (< % n) #?(:clj (aget ^bytes bytes %) :cljs (aget bytes %)))
+        ws #(let [b (at %)] (and b (or (== 32 b) (== 9 b))))]
+    (cond
+      (and (= 13 (at i)) (= 10 (at (inc i))) (ws (+ i 2))) 3
+      (and (= 10 (at i)) (ws (inc i)))                     2
+      :else                                                0)))
+
+;; RFC 5545, section 3.1: a fold can split a character of UTF-8, so the
+;; folds of bytes are removed before they're decoded
+(defn- decode
+  "The text of the UTF-8 `bytes` without their folds."
+  [bytes]
+  (let [n   (#?(:clj alength :cljs .-length) bytes)
+        out #?(:clj (java.io.ByteArrayOutputStream. n) :cljs (js/Uint8Array. n))]
+    (loop [i 0, j 0]
+      (if (< i n)
+        (let [fold (fold-length bytes n i)]
+          (if (pos? fold)
+            (recur (+ i fold) j)
+            (do #?(:clj (.write out (int (aget ^bytes bytes i)))
+                   :cljs (aset out j (aget bytes i)))
+                (recur (inc i) (inc j)))))
+        #?(:clj  (String. (.toByteArray out) "UTF-8")
+           :cljs (.decode (js/TextDecoder. "utf-8") (.subarray out 0 j)))))))
+
+(defn text
+  "The text of `x`: a string as it is, the UTF-8 of a byte array (or in
+  JavaScript a Uint8Array) decoded without its folds, or else the string
+  of `x`."
+  [x]
+  (cond
+    (string? x)                                           x
+    #?(:clj (bytes? x) :cljs (instance? js/Uint8Array x)) (decode x)
+    :else                                                 (str x)))
+
 ;; RFC 5545, section 3.1: a line break followed by a space or a tab is a
-;; fold. Bare LF and CR are taken as line breaks too, since files use them.
+;; fold. Bare LF and CR are taken as line breaks too, since files use them,
+;; and a byte order mark is left out.
 (defn lines
   "The lines of the unfolded text `s`, each a pair of its number (from 1)
   and its text, without the empty ones. A line's number is that of its
   first line in `s` before unfolding."
   [s]
-  (let [physical (str/split s #"\r\n|\n|\r" -1)]
+  (let [physical (str/split (cond-> s (str/starts-with? s "﻿") (subs 1))
+                            #"\r\n|\n|\r" -1)]
     (loop [i 0, number 1, acc (transient [])]
       (if (< i (count physical))
         (let [line (nth physical i)

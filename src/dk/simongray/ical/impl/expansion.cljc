@@ -201,15 +201,24 @@
   "The seconds of each frequency shorter than a day."
   {"HOURLY" 3600 "MINUTELY" 60 "SECONDLY" 1})
 
+(defn- month-days
+  "The days of the month `m` of the year `y`."
+  [y m]
+  (let [first (civil/days-from-civil y m 1)]
+    (range first (+ first (civil/days-in-month y m)))))
+
 (defn- period-days
-  "The days of the `k`th period of the `rule`, before its BYxxx parts."
-  [{:keys [freq interval year month day wkst byweekno]} k start]
+  "The days of the `k`th period of the `rule`, before its BYxxx parts. A
+  YEARLY period with BYMONTH has only the days of those months, since
+  BYMONTH leaves out the others anyway."
+  [{:keys [freq interval year month day wkst byweekno bymonth]} k start]
   (case freq
     "YEARLY"  (let [y (+ year (* k interval))]
-                (if byweekno
-                  (week-days y wkst byweekno)
-                  (let [jan1 (civil/days-from-civil y 1 1)]
-                    (range jan1 (+ jan1 (civil/days-in-year y))))))
+                (cond
+                  byweekno (week-days y wkst byweekno)
+                  bymonth  (mapcat #(month-days y %) (sort (distinct bymonth)))
+                  :else    (let [jan1 (civil/days-from-civil y 1 1)]
+                             (range jan1 (+ jan1 (civil/days-in-year y))))))
     "MONTHLY" (let [i (+ (dec month) (* k interval))
                     y (+ year (civil/floor-div i 12))
                     m (inc (mod i 12))

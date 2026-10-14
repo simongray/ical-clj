@@ -20,6 +20,7 @@
 (deftest round-trips
   (doseq [path (calendars "icaljs" "icalendar")]
     (let [cs (ical/parse-all (test-data/text path))]
+      (is (= cs (ical/parse-all (test-data/bytes path))) (str path " as bytes"))
       (is (= cs (ical/parse-all (ical/serialize cs))) path)
       (is (= cs (mapv (comp jcal/jcal->calendar jcal/calendar->jcal) cs))
           (str path " through jCal")))))

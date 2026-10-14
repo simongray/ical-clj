@@ -1,5 +1,6 @@
 (ns dk.simongray.ical.recurrence-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [dk.simongray.ical :as ical]))
 
 (defn crlf
@@ -132,7 +133,40 @@
       (is (= #inst "2026-10-12T17:00:00Z"
              (ical/instant cal p {:floating "Europe/Copenhagen"}))))))
 
+(deftest outlook-zones
+  (testing "a year of instances in a zone of Outlook's VTIMEZONE, from 1601"
+    (let [vevent  ["BEGIN:VEVENT" "UID:a" "DTSTART;TZID=%s:20260105T090000"
+                   "RRULE:FREQ=DAILY" "END:VEVENT"]
+          event   (fn [tzid] (map #(str/replace % "%s" tzid) vevent))
+          outlook (apply calendar (concat ["BEGIN:VTIMEZONE" "TZID:Customized Time Zone"
+                                           "BEGIN:STANDARD" "DTSTART:16010101T030000"
+                                           "TZOFFSETFROM:+0200" "TZOFFSETTO:+0100"
+                                           "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=10"
+                                           "END:STANDARD"
+                                           "BEGIN:DAYLIGHT" "DTSTART:16010101T020000"
+                                           "TZOFFSETFROM:+0100" "TZOFFSETTO:+0200"
+                                           "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=3"
+                                           "END:DAYLIGHT" "END:VTIMEZONE"]
+                                          (event "Customized Time Zone")))
+          iana    (apply calendar (event "Europe/Copenhagen"))
+          insts   (fn [cal]
+                    (->> (:components (ical/expand cal #inst "2026-01-01T00:00:00Z"
+                                                   #inst "2027-01-01T00:00:00Z"))
+                         (filter #(= :vevent (:name %)))
+                         (map #(ical/instant cal (ical/property % :dtstart)))))]
+      (is (= 361 (count (insts outlook))))
+      (is (= (insts iana) (insts outlook))))))
+
 (deftest expanding
+  (testing "an override that moves an instance into the range from after it"
+    (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20261005T100000Z"
+                        "DTEND:20261005T110000Z" "RRULE:FREQ=WEEKLY" "END:VEVENT"
+                        "BEGIN:VEVENT" "UID:a" "RECURRENCE-ID:20261102T100000Z"
+                        "DTSTART:20261008T100000Z" "DTEND:20261008T110000Z" "END:VEVENT")]
+      (is (= ["2026-10-05T10:00:00Z" "2026-10-08T10:00:00Z"]
+             (mapv #(ical/value % :dtstart)
+                   (:components (ical/expand cal #inst "2026-10-01T00:00:00Z"
+                                             #inst "2026-10-10T00:00:00Z")))))))
   (let [cal (calendar "BEGIN:VEVENT" "UID:a" "DTSTART:20261005T100000Z"
                       "DTEND:20261005T110000Z" "RRULE:FREQ=DAILY" "END:VEVENT"
                       "BEGIN:VEVENT" "UID:b" "DTSTART:20261009T100000Z" "END:VEVENT"
